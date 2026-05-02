@@ -525,7 +525,230 @@ C'1/8                                  ↑     ↑      ↑     ↑
 
 ---
 
-## 七、核心挑战与应对策略
+## 七、任务定位：这是 EPR 吗？
+
+> **短答：不是传统意义上的 EPR。**
+> 我们做的是 **Bidirectional Symbolic-Performance Translation**（双向符号-表演翻译）——EPR 的一个 LLM-native 变体 + 一个 EPR 从未触及的反向任务。
+
+### 与传统 EPR 的本质区别
+
+| 维度 | 传统 EPR（Peransformer, VirtuosoNet, Dexter, ScorePerformer） | 本研究 |
+|------|-----------------------------------------------------------|--------|
+| **输入格式** | Score MIDI（pitch, onset, duration, constant velocity） | **ABCX**（符号乐谱：调号、拍号、连音线、装饰音、Ped. 标记、强弱术语） |
+| **输出格式** | Performance MIDI（预测 Δonset, Δduration, velocity, pedal） | **MIDI-TSV**（文本化表演描述）→ 再转 MIDI |
+| **模型架构** | Transformer encoder + regression head | **LLM**（next-token prediction） |
+| **学习范式** | 回归 / 分布预测 / 分类 | 语言生成 |
+| **方向** | 单向 Score → Performance | **双向 ABCX ↔ MIDI-TSV** |
+| **反向任务** | 不存在（少数有 discriminator 作为辅助，但不是生成器） | **核心设计目标之一** |
+
+### 三个根本性差异
+
+**差异 1：输入表示层次更高。** 传统 EPR 的 score MIDI 信息量极少——只有 pitch、onset、duration，连 "p/f" 都没有。而 ABCX 保留了 MusicXML 级别的符号语义：谱面上的 `p`、`crescendo`、`Ped./✻`、`staccato`、`legato`、`tr` 都是显式的 token。这意味着"演奏者视角"的规则性知识（参见第二节 Pedaling 的讨论）可以被模型直接读取，而不是从 MIDI 中"猜"出来。
+
+**差异 2：生成范式不同。** LLM 做 next-token prediction，天然擅长"风格一致性"和"长程结构"（phrasing 是跨 8-32 小节的，恰好是 Transformer 的优势区间）。传统 EPR 的 regression 模型容易预测"平均演奏"，而 LLM 的采样机制（temperature, nucleus）天然支持"一对多"的多样性输出。
+
+**差异 3：反向任务是新领域。** 没有任何现有 EPR 论文做"从 expressive performance 恢复干净 score"。Peransformer 的 discriminator 是"真/假"二分类，不是生成器。你的反向任务（Performance → Score）是：
+- **EPR 领域的空白**
+- **数据飞轮的核心引擎**（参考第六节 Bootstrapping）
+- **独立可评估的任务**（输出是离散的、可验证的，人工审核成本低）
+
+### 如何与现有 EPR 方法比较
+
+应当**分层对比**，不要硬塞到 "EPR benchmark" 框架里：
+
+**Layer A：演奏质量（与 EPR 共享的 benchmark）**
+- 指标：timing RMSE、velocity Pearson correlation、KLD、DTWD、人类盲听 MOS
+- 对比对象：Peransformer、VirtuosoNet、Dexter、ScorePerformer
+- 数据集：ASAP、ATEPP subset B、MAESTRO
+- 预期：LLM 可能在小数据下不如 regression 模型，但在 zero-shot / 跨风格场景应该有优势
+
+**Layer B：数据效率（LLM 的传统优势区）**
+- 指标：few-shot performance、zero-shot cross-style generalization
+- 对比对象：从头训练的 Transformer EPR
+- 数据集：ATEPP subset A / IMSLP 扩展数据
+- 如果 LLM 的预训练携带了音乐常识（乐理、和声分析），这里应该有显著优势
+
+**Layer C：独特能力（EPR 文献空白）**
+- 任务：Performance → Score recovery
+- 指标：score accuracy（pitch）、rhythm reconstruction F1、调号/拍号识别准确率
+- 对比对象：无直接对照——这是**新任务**
+- 次要对比：MT3（Multi-Task Transcription）等音频 transcription 工作，但它们任务不同
+
+### 论文定位建议
+
+**不要把论文 pitch 成"另一个 EPR 系统"**——会陷入与 Peransformer/Dexter 在 Layer A 上的苦战，且可能没有 SOTA 优势。
+
+**更好的 pitch**：
+- 主题：**Bidirectional symbolic-performance translation as a pre-training objective for music understanding**
+- 创新点 1：Novel dual-direction task formulation
+- 创新点 2：ABCX 作为 score representation（比 MIDI 信息量更大）
+- 创新点 3：Bootstrapping 数据飞轮（反向任务自动生成训练对）
+- 创新点 4：LLM 作为 performance generator（不是传统 regression）
+
+与传统 EPR 的关系：**"EPR is one of the downstream tasks we support"**——而不是"we are a new EPR method"。
+
+---
+
+## 八、数据集构建：最大的现实障碍
+
+> **数据集获取本身就是一个独立的研究问题，成本可能占整个项目的 40-60%。**
+> 这是项目的最大风险，也是最大机会——如果能做出一个高质量的 aligned 三元组数据集，本身就有独立发表价值。
+
+### 所需数据的本质：ABCX ↔ MIDI 三元组
+
+```
+理想的训练样本 =
+    (ABCX score 乐谱, Score MIDI, Performance MIDI)
+```
+
+三者需要严格对齐，这是目前**没有任何公开数据集**完整覆盖的。现状：
+
+| 数据集 | ABCX | Score MIDI | Performance MIDI | 备注 |
+|--------|------|-----------|-----------------|------|
+| ASAP | ❌ | ✅ 235 | ✅ 1067 | 需构造 ABCX |
+| MAESTRO v3 | ❌ | ❌ | ✅ 1276 | 需同时构造 ABCX + Score MIDI |
+| ATEPP | ❌ | ❌ | ✅ 1497 | 需同时构造 ABCX + Score MIDI |
+| GiantMIDI | ❌ | ❌ | ✅ 10,853 | 反向任务的 bootstrapping 目标 |
+| Pianist8 | ❌ | ❌ | ✅ 411 | 现代钢琴家，版权受限 |
+| EMOPIA | ❌ | ❌ | ✅ 1071 | 流行钢琴，版权问题严重 |
+
+### 数据源 A：ASAP 的 ABCX 构造
+
+**现状**：已跑通 `midi_to_abcx.py`，235 首 `midi_score.mid` → 235 个 ABCX，`to_standard.py` 全部验证通过。
+
+**但这只是"初级 ABCX"**。Score MIDI → ABCX 是**有损的**：
+- ✅ 保留：pitch、rhythm、bar/beat、key、time signature
+- ❌ 丢失：`p/f/ff` 强弱术语、`crescendo/diminuendo` 渐变符号、`slur` 连音线、`staccato` 点、`Ped./✻` 踏板标记、`rit./accel.` 速度指示、装饰音符号
+
+这些丢失的正是 EPR 最需要的"演奏者视角的规则性信息"（见第二节）。
+
+**改进路径**：
+1. **首选方案：MusicXML → ABCX**（ASAP 有 222 个 MusicXML score！）
+   - MusicXML 保留了所有谱面信号
+   - 需要写/扩展 `musicxml_to_abcx.py`（目前只有 `midi_to_abcx.py`）
+   - 这是**一周工作量**，产出的 ABCX 质量会显著提升
+
+2. **次选方案：LLM 反推**
+   - 给 LLM 输入 MIDI 特征 + 初级 ABCX，让它补充表达标记
+   - 风险：LLM 会"幻觉"出谱面没有的标记
+   - 只适合作为初级 ABCX 的 fallback
+
+**结论**：**必须先实现 MusicXML → ABCX**，否则整个项目的"ABCX 信息量 > score MIDI"的核心优势会被这一步稀释掉。
+
+### 数据源 B：MAESTRO/ATEPP/GiantMIDI 的乐谱获取
+
+**问题**：这些数据集**没有提供对应的 MusicXML / ABCX 乐谱**。必须自己构造。
+
+**路径 1：基于 performance MIDI 反推 score**（本研究的反向任务本身）
+- 自动 quantize（Nakamura alignment + music21）→ 初级 score MIDI
+- MIDI → ABCX（现有管线）→ 初级 ABCX
+- 人工审核（参考第六节 bootstrapping）
+
+**路径 2：外部乐谱数据库匹配**
+
+| 数据源 | 规模 | 访问性 | 格式 | 法律状态 |
+|--------|------|-------|------|---------|
+| **MuseScore Community** | ~数百万 | 需 API / 手动下载，受限 | MSCX / MIDI | 用户上传，版权混乱 |
+| **IMSLP** | ~60 万 | 公开 | PDF（需 OMR） / MusicXML（少量） | 公有领域为主 |
+| **Mutopia Project** | ~2 千 | 公开 | LilyPond | 公有领域，CC 许可 |
+| **DCML Corpora** | ~数百 | 公开 | MuseScore + harmonic annotations | CC-BY-NC-SA |
+| **OpenScore** | ~数千 | 公开 | MuseScore | 公有领域 |
+| **CCARH Humdrum** | ~数千 | 公开 | Humdrum (**kern) | 公有领域 |
+
+**MAESTRO 匹配策略**：
+- MAESTRO 的 CSV 有 `canonical_composer` + `canonical_title`
+- 按"composer + title"在 MuseScore Community / IMSLP 匹配
+- 但 MAESTRO 的曲目大多是古典奏鸣曲（Beethoven Op.XX No.Y, Chopin Ballades, ...），**这些都在公有领域**
+- **预期匹配率**：Bach/Mozart/Beethoven/Chopin/Schubert/Schumann/Liszt → 70-90%
+- **难点**：作曲家少见的变体版本、不同版本的 repeat 处理、cadenza 差异
+
+### 数据源 C：版权问题的分层评估
+
+这是**必须正面面对**的问题。分三层：
+
+**Layer 1：公有领域（Public Domain）—— 安全**
+- 作曲家去世满 70 年（或美国 1928 年前发表）
+- 覆盖范围：Bach, Mozart, Haydn, Beethoven, Schubert, Chopin, Schumann, Liszt, Brahms, Debussy (大部分), Ravel (大部分), Prokofiev (早期作品), Rachmaninoff (早期作品), Scriabin, Balakirev
+- **ASAP 的 14 位作曲家几乎全在此列** ✅
+- **MAESTRO 的主体曲目（古典奏鸣曲）也在此列** ✅
+- **GiantMIDI 的 2786 位作曲家主体是古典** ✅
+
+**Layer 2：录音版权 vs. 作品版权（复杂）**
+- 作品本身（曲谱）公有领域，但**特定录音的版权**属于演奏者/唱片公司
+- MIDI transcription（从录音提取）的法律地位：灰色地带
+  - 美国：2014 年 *Capitol Records v. ReDigi* 后，音频-to-MIDI 被部分法院视为衍生作品
+  - 但学术数据集（MAESTRO、ATEPP、GiantMIDI）均以 "research-only" 名义分发，引用时注明 CC-BY-NC 等许可
+- **建议**：数据集发布时使用 CC-BY-NC-SA，明确"research use only"
+
+**Layer 3：现代流行音乐（版权受限）—— 谨慎**
+- ❌ Pianist8：Yiruma、Einaudi、Clayderman arrangements、Hancock、Sakamoto、Hisaishi、Bethel/Hillsong → **全部受版权保护**
+- ❌ EMOPIA：现代流行歌曲的钢琴改编 → **版权风险高**
+- **如果最终数据集要公开发布**，这两部分只能：
+  - 提供 **metadata + 下载脚本**（让用户自己从源获取）
+  - 或只发布**模型权重 + 评估代码**（不分发原始数据）
+
+### 数据集构建的实际工作量估算
+
+| 任务 | 工作量 | 难度 | 风险 |
+|------|-------|------|------|
+| `musicxml_to_abcx.py` 实现 | 1 周 | ⭐⭐⭐ | 低 |
+| ASAP（235 曲）MusicXML → ABCX | 1 天（自动） | ⭐ | 低 |
+| ASAP ABCX 人工审核 | 2-3 周（1 人） | ⭐⭐ | 中 |
+| MAESTRO 曲目在 MuseScore/IMSLP 匹配 | 2-4 周（含爬虫） | ⭐⭐⭐⭐ | 高（匹配失败率） |
+| PDF OMR（IMSLP 扫描版） | 4+ 周 | ⭐⭐⭐⭐⭐ | 很高（OMR 准确率） |
+| Pianist8 的反向任务 bootstrapping | 2-3 周 | ⭐⭐⭐ | 中 |
+| 版权审查与许可选择 | 1 周 | ⭐⭐ | 中（法律问题） |
+| **总计** | **~3-4 个月（单人）** | | |
+
+### 数据集本身作为独立研究产出
+
+> **是的，这个数据集有独立发表价值，甚至可能比方法论文更容易发表。**
+
+**可对标的数据集论文**：
+- **ATEPP** (ISMIR 2022)：~11,700 performances 的 transcribed MIDI，没有 score 对齐，仅凭"规模大 + automation"就被 ISMIR 接收
+- **ASAP** (ISMIR 2020)：235 scores + 1067 performances + beat alignment，发表并被广泛引用
+- **MAESTRO** (ICLR 2019)：200h performance MIDI + audio，成为领域基础设施
+
+**本数据集的独特价值**：
+1. **Aligned 三元组**：ABCX + Score MIDI + Performance MIDI，**领域首个** symbolic 层完整的 piano 数据集
+2. **ABCX 的文本特性**：可以直接用于 LLM 训练，MusicXML/MIDI 无法做到
+3. **规模**：如果覆盖 MAESTRO + ASAP + ATEPP，预期 **~3,000 对齐三元组**（对 symbolic music 而言是中等规模）
+4. **双向配对**：正向和反向任务共享同一数据集
+
+**可投稿venue**：
+- **TISMIR**（Transactions of ISMIR）：接收 dataset papers，是首选
+- **ISMIR 会议 Dataset track**：年度 dataset papers
+- **NeurIPS Datasets & Benchmarks**：更 ML 导向，规模要求更高
+- **Zenodo + arXiv preprint**：纯数据集发布，不走传统会议
+
+**建议发表策略**：
+```
+Year 1 Q1-Q2:  MusicXML→ABCX 工具 + ASAP 数据集（首发，1000 对齐样本）
+Year 1 Q3-Q4:  扩展到 MAESTRO / ATEPP，发布 v2（3000+ 样本）  
+              → 投 ISMIR/TISMIR dataset paper
+Year 2:       双向模型论文
+              → 投 ISMIR method paper 或 ICLR
+```
+
+**数据集论文的优势**：
+- 审稿人评价标准明确（规模、质量、许可、文档）
+- 不需要超过现有方法的 SOTA 指标
+- 一旦发布，成为领域基础设施，引用量持续增长
+- 让后续方法论文更有说服力（"we use our dataset"）
+
+### 结论与行动项
+
+**数据集构建是项目的首要工作，优先级高于模型训练。** 具体行动：
+
+1. **立即启动**：`musicxml_to_abcx.py` 实现（利用 ASAP 的 222 个 MusicXML）
+2. **短期**（1-2 月）：ASAP v1 发布 - 222 (ABCX, Score MIDI, Performance MIDI) 三元组
+3. **中期**（3-4 月）：MAESTRO 曲目匹配 MuseScore Community / IMSLP，扩展数据集到 1000+ 样本
+4. **长期**（6 月+）：用训练好的反向模型 bootstrap GiantMIDI，扩展到 3000+
+5. **并行**：版权审查 + 数据集许可选择（CC-BY-NC-SA 推荐）
+
+---
+
+## 九、核心挑战与应对策略
 
 ### 一对多问题：同一 Score 有无数种演奏
 
@@ -559,7 +782,7 @@ C'1/8                                  ↑     ↑      ↑     ↑
 
 ---
 
-## 八、落地路径：从 Score 到顶级音源的完整 Pipeline
+## 十、落地路径：从 Score 到顶级音源的完整 Pipeline
 
 ### 完整处理流程
 
@@ -606,7 +829,7 @@ Piano Performance Model
 
 ---
 
-## 九、实施计划：分阶段的现实路线
+## 十一、实施计划：分阶段的现实路线
 
 ### Phase 1: 数据准备与探索（1-2 周）
 
@@ -637,7 +860,7 @@ Piano Performance Model
 
 ---
 
-## 十、关键参考文献
+## 十二、关键参考文献
 
 ### 核心论文
 
@@ -660,7 +883,7 @@ Piano Performance Model
 
 ---
 
-## 十一、Insight 日志
+## 十三、Insight 日志
 
 > 随着研究推进，将新的认知记录在此。
 
@@ -673,6 +896,10 @@ Piano Performance Model
 | 2026-04-21 | **效果瓶颈的根源不在模型容量**：当前方法的主要问题是数据量不足（200h vs 30 万小时）、一对多未解决（模型学的是"平均演奏"而非分布）、缺少高层音乐知识（不懂"这里是高潮"） |
 | 2026-04-21 | **难度 = 1/(谱面信息密度 + 规则明确度)**：pedaling 被学术文献列为"最薄弱环节"，但从演奏者视角，它反而是最容易的——因为和声变化驱动换踏板是明确规则。真正难的是 rubato 和 phrasing，谱上没有精确标记，靠演奏者直觉 |
 | 2026-04-21 | **风格迁移的核心矛盾：钢琴家的风格数据是 audio，不是 expressive MIDI**。纯 AMT→MIDI 会破坏表达信息，纯 audio 监督又太弱。解决方案是三层架构：Layer 1 (MIDI 主模型) + Layer 2 (audio 弱监督提取全局轮廓) + Layer 3 (少量 aligned MIDI 做 style adapter) |
+| 2026-05-02 | **本项目不是传统 EPR，而是 Bidirectional Symbolic-Performance Translation**：传统 EPR 是 Score MIDI → Performance MIDI 的 regression；本项目是 ABCX ↔ MIDI-TSV 的 LLM 双向生成。核心区别是输入表示层次更高（ABCX 保留谱面符号语义）、生成范式是 LLM 而非 regression、反向任务是 EPR 文献空白 |
+| 2026-05-02 | **MIDI score → ABCX 是有损的，必须用 MusicXML → ABCX 才能发挥 ABCX 的信息量优势**：score MIDI 丢失了 `p/f`、`crescendo`、`slur`、`Ped.`、`rit.` 等所有表达标记，这些恰好是"演奏者视角的规则性信息"。ASAP 有 222 个 MusicXML，必须优先实现 `musicxml_to_abcx.py`，否则 ABCX 退化成 score MIDI 的等价表示，项目核心优势消失 |
+| 2026-05-02 | **数据集本身可能比方法论文更先值得发表**：对标 ATEPP/ASAP/MAESTRO 的成功案例，一个 aligned (ABCX, Score MIDI, Performance MIDI) 三元组数据集是领域首次。投稿路线：TISMIR dataset paper → ISMIR method paper。版权上，ASAP/MAESTRO 的古典曲目全在公有领域，Pianist8/EMOPIA 的现代曲目只能通过 metadata + 下载脚本的形式间接分发 |
+| 2026-05-02 | **数据集构建工作量是 3-4 人月**：MusicXML→ABCX 实现 (1 周) + ASAP 审核 (2-3 周) + MAESTRO 在 MuseScore/IMSLP 匹配 (2-4 周) + OMR (4+ 周) + bootstrapping (2-3 周) + 版权审查 (1 周)。这个工作量超过很多方法论文的实现成本，但一次做对可以持续复利 |
 
 ---
 

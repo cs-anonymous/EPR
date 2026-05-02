@@ -450,7 +450,7 @@ def midi_to_abcx(midi_path, min_seconds=10.0, min_tail_seconds=6.0):
         f"M:{first_ts}",
         "L:1/16",
         f"K:{key_abc}",
-        f"%%score ({' '.join(voice_names)})",
+        f"%%score {' '.join('(' + v + ')' for v in voice_names)}",
         "",
     ]
 
