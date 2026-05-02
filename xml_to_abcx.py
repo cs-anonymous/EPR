@@ -432,6 +432,43 @@ def clean_for_abcjs(abc_text: str) -> str:
     #     `x` inside `[...]`. Empty residual chords collapse to a single `x`.
     text = _CHORD_WITH_X_RE.sub(_strip_chord_x, text)
 
+    # 12b. Replace invisible rest `x` with visible rest `z`. abcjs v6.1.9 has
+    #      a bug: `x` elements lack pitch/Y-position data, so their
+    #      `top`/`bottom` stay undefined. When `undefined` is used in
+    #      `Math.max` for voice height calculation, NaN propagates through
+    #      the entire SVG viewBox height, making the rendering invisible.
+    #      `z` (visible rest) has proper staff positioning.
+
+    def _replace_invisible_rests(line: str) -> str:
+        if line.startswith(("%%", "%", "X:", "T:", "M:", "L:", "Q:", "K:",
+                            "V:", "U:", "W:", "I:", "P:", "R:", "C:", "N:",
+                            "O:", "Z:", "S:", "H:", "B:", "D:", "F:", "G:")):
+            return line
+        # Mask decorations, annotations, and chord brackets so we don't touch
+        # `x` inside them (e.g. text like `"8va~"` or `!sfz!`).
+        spans = []
+        for m in _re.finditer(r"!(?:[^!\n]+)!|\"[^\"\n]*\"|\[[^\]\n]*\]", line):
+            spans.append((m.start(), m.end()))
+
+        def in_span(i: int) -> bool:
+            for s, e in spans:
+                if s <= i < e:
+                    return True
+            return False
+
+        out = []
+        for i, ch in enumerate(line):
+            if ch == "x" and not in_span(i):
+                # `x` in ABC music is always an invisible rest (never a pitch
+                # letter). Replace it with `z` so abcjs can position it on
+                # the staff.
+                out.append("z")
+            else:
+                out.append(ch)
+        return "".join(out)
+
+    text = "\n".join(_replace_invisible_rests(ln) for ln in text.split("\n"))
+
     # 13. Flatten nested `%%score { { (...) } }` to `%%score { (...) }`,
     #     and drop ALL braces from %%score lines whose nesting we can't
     #     express in abcjs (e.g. `%%score { { A } B }` -- abcjs rejects
