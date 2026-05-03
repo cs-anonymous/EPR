@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert MusicXML -> ABCX via xml2abc + to_standard.
+"""Convert MusicXML -> ABCX via xml2abc + abc2abcx.
 
 Pipeline:
     MusicXML (.musicxml / .xml / .mxl)
@@ -7,7 +7,7 @@ Pipeline:
         v  (xml2abc.py by W. Vergeynst)
     ABC (rich: dynamics, slurs, articulations, pedals, tempo marks)
         |
-        v  (to_standard.to_standard_abcx)
+        v  (abc2abcx.to_standard_abcx)
     ABCX (unified L: across voices, `;`-separated measures)
 
 Why MusicXML (not Score MIDI) is the preferred source:
@@ -43,8 +43,8 @@ from typing import Optional
 # --- Path wiring for the two external components -----------------------------
 
 _HERE = Path(__file__).resolve().parent
-_XML2ABC_DIR = _HERE / "tools" / "xml2abc"
-_ABCX_SCRIPTS_DIR = Path("/home/sy/2026/Music/abcx/scripts")
+_XML2ABC_DIR = _HERE / "xml2abc"
+_ABCX_SCRIPTS_DIR = _HERE / "abcx" / "scripts"
 
 for p in (_XML2ABC_DIR, _ABCX_SCRIPTS_DIR):
     if p.exists() and str(p) not in sys.path:
@@ -60,10 +60,10 @@ except ImportError as e:
     ) from e
 
 try:
-    from to_standard import to_standard_abcx, AbcError  # type: ignore
+    from abc2abcx import to_standard_abcx, AbcError  # type: ignore
 except ImportError as e:
     raise SystemExit(
-        f"Cannot import to_standard from {_ABCX_SCRIPTS_DIR}. "
+        f"Cannot import abc2abcx from {_ABCX_SCRIPTS_DIR}. "
         "Check the path exists."
     ) from e
 
@@ -171,15 +171,254 @@ _PEDAL_REWRITE = {
     "ped)": '"^*"',
 }
 
-# Octave shifts -> text annotation
+# Octave-shift decorations → native ABC decorations.
+# The bundled abcjs has been patched to recognise !8va(! / !8va)! / !8vb(! / !8vb)!
+# as ottava range markers, rendering them as dashed lines with labels above/below
+# the staff and transposing playback pitch by ±1 octave.
 _OCTAVE_REWRITE = {
-    "8va(": '"^8va~"',
-    "8va)": '"^~"',
-    "8vb(": '"^8vb~"',
-    "8vb)": '"^~"',
-    "ottava8va": '"^8va~"',
-    "ottava8vb": '"^8vb~"',
+    "8va(": "!8va(!",
+    "8va)": "!8va)!",
+    "8vb(": "!8vb(!",
+    "8vb)": "!8vb)!",
+    "ottava8va": "!8va(!",
+    "ottava8vb": "!8vb(!",
 }
+
+
+# ---------------------------------------------------------------------------
+# Ottava conversion: handle 8va/8vb decorations and transpose notes within
+# range to engraved (display) position
+# ---------------------------------------------------------------------------
+
+_NOTE_PITCH_RE = _re.compile(r"((?:\^{1,2}|_{1,2}|=)?)([A-Ga-gxyzZ])([,']*)")
+
+
+def _shift_pitch_octave(letter: str, mods: str, delta: int) -> tuple:
+    """Shift an ABC pitch letter + mods by `delta` octaves.
+
+    ABC octave convention: `C,` = C2, `C` = C3, `c` = C4 (middle C),
+    `c'` = C5, `c''` = C6. Each `,` lowers by one octave; each `'` raises.
+    """
+    if letter not in "ABCDEFGabcdefg":
+        return letter, mods  # rests (x, y, z) — no pitch to transpose
+    apos = mods.count("'")
+    commas = mods.count(",")
+    base_octave = 3 if letter.isupper() else 4
+    octave = base_octave - commas + apos
+    new_octave = octave + delta
+    pitch = letter.upper()
+    if new_octave <= 3:
+        return pitch, "," * (3 - new_octave)
+    return pitch.lower(), "'" * (new_octave - 4)
+
+
+def _transpose_notes_flat(text: str, delta: int) -> str:
+    """Transpose all pitches inside `text` by `delta` octaves.
+    Used for chord `[...]` and grace `{...}` interiors."""
+    if delta == 0:
+        return text
+    out = []
+    i = 0
+    n = len(text)
+    while i < n:
+        m = _NOTE_PITCH_RE.match(text, i)
+        if m and m.group(2) in "ABCDEFGabcdefg":
+            accidental, letter, mods = m.group(1), m.group(2), m.group(3)
+            new_letter, new_mods = _shift_pitch_octave(letter, mods, delta)
+            out.append(accidental + new_letter + new_mods)
+            i = m.end()
+        else:
+            out.append(text[i])
+            i += 1
+    return "".join(out)
+
+
+def _process_ottava_line(line: str, state: int) -> tuple:
+    """Process one music line. `state` = 0 (none), -1 (8va active), +1 (8vb
+    active). Notes within an active range are transposed to engraved
+    (display) position. Returns (new_line, new_state).
+
+    Outputs native ABC decorations: !8va(! / !8va)! / !8vb(! / !8vb)!
+    Also accepts legacy text annotation input ("^8va~" / "^8vb~" / "^~")
+    for backwards compatibility and rewrites them to native form.
+    """
+    out = []
+    i = 0
+    n = len(line)
+
+    while i < n:
+        ch = line[i]
+
+        # Text annotation "..." (legacy input from older _OCTAVE_REWRITE)
+        if ch == '"':
+            end = line.find('"', i + 1)
+            if end < 0:
+                out.append(line[i:])
+                break
+            text_content = line[i + 1:end]
+            if text_content == "^8va~":
+                if state == 0:
+                    out.append("!8va(!")
+                    state = -1
+                i = end + 1
+                continue
+            if text_content == "^8vb~":
+                if state == 0:
+                    out.append("!8vb(!")
+                    state = +1
+                i = end + 1
+                continue
+            if text_content == "^~":
+                if state != 0:
+                    if state == -1:
+                        out.append("!8va)!")
+                    else:
+                        out.append("!8vb)!")
+                    state = 0
+                # stray close — drop
+                i = end + 1
+                continue
+            out.append(line[i:end + 1])
+            i = end + 1
+            continue
+
+        # Native decoration !...!
+        if ch == '!':
+            end = line.find('!', i + 1)
+            if end < 0:
+                out.append(line[i:])
+                break
+            deco = line[i + 1:end]
+            if deco == "8va(":
+                if state == 0:
+                    out.append("!8va(!")
+                    state = -1
+                i = end + 1
+                continue
+            if deco == "8va)":
+                if state == -1:
+                    out.append("!8va)!")
+                    state = 0
+                # stray close — drop
+                i = end + 1
+                continue
+            if deco == "8vb(":
+                if state == 0:
+                    out.append("!8vb(!")
+                    state = +1
+                i = end + 1
+                continue
+            if deco == "8vb)":
+                if state == +1:
+                    out.append("!8vb)!")
+                    state = 0
+                # stray close — drop
+                i = end + 1
+                continue
+            out.append(line[i:end + 1])
+            i = end + 1
+            continue
+
+        # Inline field [X:...] — pass through, no transposition
+        if ch == '[' and i + 2 < n and _re.match(r"[A-Za-z]:", line[i + 1:i + 3]):
+            end = line.find(']', i + 1)
+            if end < 0:
+                out.append(line[i:])
+                break
+            out.append(line[i:end + 1])
+            i = end + 1
+            continue
+
+        # Chord [...]
+        if ch == '[':
+            end = line.find(']', i + 1)
+            if end < 0:
+                out.append(line[i:])
+                break
+            inner = line[i + 1:end]
+            out.append('[' + _transpose_notes_flat(inner, state) + ']')
+            i = end + 1
+            continue
+
+        # Grace {...}
+        if ch == '{':
+            end = line.find('}', i + 1)
+            if end < 0:
+                out.append(line[i:])
+                break
+            inner = line[i + 1:end]
+            out.append('{' + _transpose_notes_flat(inner, state) + '}')
+            i = end + 1
+            continue
+
+        # Pitched note
+        m = _NOTE_PITCH_RE.match(line, i)
+        if m and m.group(2) in "ABCDEFGabcdefg" and state != 0:
+            accidental, letter, mods = m.group(1), m.group(2), m.group(3)
+            new_letter, new_mods = _shift_pitch_octave(letter, mods, state)
+            out.append(accidental + new_letter + new_mods)
+            i = m.end()
+            continue
+        if m:
+            out.append(m.group(0))
+            i = m.end()
+            continue
+
+        # Default
+        out.append(ch)
+        i += 1
+
+    return "".join(out), state
+
+
+def _convert_ottava_to_native(text: str) -> str:
+    """Transpose notes within each 8va/8vb range to engraved (display) position.
+
+    Accepts two input forms (mixed within one file is fine):
+      - "^8va~" / "^8vb~" text annotations with "^~" closing markers
+        (legacy form from older _OCTAVE_REWRITE, for backwards compatibility)
+      - !8va(! / !8va)! / !8vb(! / !8vb)! native decorations
+        (xml2abc raw output or _OCTAVE_REWRITE output)
+
+    Output form is always `!8va(!` / `!8va)!` / `!8vb(!` / `!8vb)!` native
+    decorations. Within each range all pitches are shifted by one octave
+    (8va lowers, 8vb raises) so the rendered score matches the original
+    engraving: notes appear at their written position under the ottava line.
+
+    State is tracked per-voice across line boundaries (an ottava may span
+    multiple rendered lines).
+    """
+    lines = text.split("\n")
+    out_lines = []
+    voice_state: dict = {}
+    current_voice = "1"
+    in_body = False
+
+    for line in lines:
+        s = line.strip()
+        if not in_body:
+            out_lines.append(line)
+            if s.startswith("K:"):
+                in_body = True
+            continue
+
+        v_match = _re.match(r"^V:\s*(\S+)", s)
+        if v_match:
+            current_voice = v_match.group(1)
+            voice_state.setdefault(current_voice, 0)
+            out_lines.append(line)
+            continue
+
+        if not s or s.startswith("%") or _re.match(r"^[A-Za-z]:", s):
+            out_lines.append(line)
+            continue
+
+        state = voice_state.get(current_voice, 0)
+        new_line, new_state = _process_ottava_line(line, state)
+        voice_state[current_voice] = new_state
+        out_lines.append(new_line)
+
+    return "\n".join(out_lines)
 
 
 def _rewrite_decoration(match: "_re.Match") -> str:
@@ -279,6 +518,119 @@ def _reorder_inline_run(match: "_re.Match") -> str:
     return "".join(fields) + "".join(annotations)
 
 
+# ---------------------------------------------------------------------------
+# Voice clef correction (step 17 helper)
+# ---------------------------------------------------------------------------
+# abcjs v6.1.9 resets each voice to its DECLARED clef (from `V:n treble|bass`)
+# at the start of every visual line, overriding any prior inline `[K:...]`
+# switches.  A voice declared `bass` will show bass clef on every new line
+# even when `[K:treble]` was active.  We scan each voice's music for the
+# predominant clef and rewrite the voice declaration to match.
+
+_VOICE_DECL_RE = _re.compile(
+    r"^(V:\s*(\S+)\s+)(treble|bass)(.*)$"
+)
+_K_CLEF_RE = _re.compile(r"\[K:\s*(treble|bass)\]")
+_SCORE_BRACE_RE = _re.compile(r"%%score\s*\{([^}]*)\}")
+
+
+def _parse_score_groups(text: str) -> dict[str, str]:
+    """Parse %%score braces and return {voice_id: 'treble'|'bass'}.
+    First group → treble, second group → bass (ABCX spec default)."""
+    result: dict[str, str] = {}
+    for m in _SCORE_BRACE_RE.finditer(text):
+        inner = m.group(1)
+        groups = inner.split("|")
+        for group_idx, group in enumerate(groups):
+            group = group.strip()
+            if group.startswith("(") and group.endswith(")"):
+                group = group[1:-1]
+            default_clef = "treble" if group_idx == 0 else "bass"
+            for tok in group.split():
+                vid = _re.sub(r"^v?(\d+)", r"V\1", tok.strip(), flags=_re.IGNORECASE)
+                if vid:
+                    result[vid] = default_clef
+    return result
+
+
+def _correct_voice_clefs(text: str) -> str:
+    """Rewrite `V:n bass|treble` declarations to match the predominant
+    inline clef used by each voice's music content. If inline switches
+    are tied or absent, fall back to the %%score group default
+    (first group = treble, second = bass per ABCX spec)."""
+    lines = text.split("\n")
+
+    voice_lines: dict[str, list[str]] = {}
+    current_voice: str | None = None
+    for line in lines:
+        m = _re.match(r"^V:\s*(\S+)", line.strip())
+        if m:
+            current_voice = m.group(1)
+            voice_lines.setdefault(current_voice, []).append(line)
+            continue
+        if current_voice and line.strip() and not line.startswith("%%"):
+            voice_lines[current_voice].append(line)
+
+    # Parse %%score group defaults.
+    score_defaults = _parse_score_groups(text)
+
+    clef_map: dict[str, str] = {}
+    for voice_id, vlines in voice_lines.items():
+        treble = 0
+        bass = 0
+        for ln in vlines:
+            if _re.match(r"^(V:|%%)", ln.strip()):
+                continue
+            for cm in _K_CLEF_RE.finditer(ln):
+                if cm.group(1) == "treble":
+                    treble += 1
+                else:
+                    bass += 1
+        if treble > bass and treble >= 2:
+            clef_map[voice_id] = "treble"
+        elif bass > treble and bass >= 2:
+            clef_map[voice_id] = "bass"
+        elif voice_id in score_defaults:
+            # Tied, zero, or weak signal — use %%score group default.
+            clef_map[voice_id] = score_defaults[voice_id]
+
+    if not clef_map:
+        return text
+
+    # Step 2: rewrite voice declarations.
+    def _rewrite_decl(line: str) -> str:
+        m = _VOICE_DECL_RE.match(line.strip())
+        if m:
+            vid = m.group(2)
+            new_clef = clef_map.get(vid)
+            if new_clef and new_clef != m.group(3):
+                return "V:" + vid + " " + new_clef + m.group(4)
+        return line
+
+    text = "\n".join(_rewrite_decl(ln) for ln in text.split("\n"))
+
+    # Step 3: strip redundant inline clef switches. Track the current
+    # voice as we iterate through sequential voice blocks in the output.
+    current_voice: str | None = None
+    stripped_lines = []
+    for line in text.split("\n"):
+        vm = _re.match(r"^(V:\s*(\S+))(.*)$", line.strip())
+        if vm:
+            current_voice = vm.group(2)
+            # Also strip from the V: declaration line itself.
+            new_clef = clef_map.get(current_voice)
+            if new_clef:
+                line = _re.sub(r"\[K:\s*" + new_clef + r"\]", "", line)
+            stripped_lines.append(line)
+            continue
+        new_clef = clef_map.get(current_voice) if current_voice else None
+        if new_clef:
+            line = _re.sub(r"\[K:\s*" + new_clef + r"\]", "", line)
+        stripped_lines.append(line)
+
+    return "\n".join(stripped_lines)
+
+
 def clean_for_abcjs(abc_text: str) -> str:
     """Post-process xml2abc output so abcjs (v6.1.9) parses without warnings."""
     text = abc_text
@@ -348,6 +700,12 @@ def clean_for_abcjs(abc_text: str) -> str:
 
     # 5. Rewrite / drop unsupported decorations.
     text = _DECO_RE.sub(_rewrite_decoration, text)
+
+    # 5b. Normalise 8va/8vb: convert "^8va~"/"^8vb~" text annotations to
+    # native !8va(!/!8vb(! decorations AND transpose notes within each
+    # range down/up one octave so they render at engraved (display) pitch.
+    # Handles both legacy text form and current native form as input.
+    text = _convert_ottava_to_native(text)
 
     # 6. Drop *all* U: macro definitions (e.g. `U:s=!stemless!`). Their target
     #    decorations are unsupported and the body uses of the macro letter
@@ -664,7 +1022,13 @@ def clean_for_abcjs(abc_text: str) -> str:
     text = _re.sub(r" *\| *", " | ", text)
     text = _re.sub(r"\n{3,}", "\n\n", text)
 
-    # 16. Re-wrap voice blocks so all voices have the SAME number of lines.
+    # 16. Correct voice clef declarations. This MUST run BEFORE
+    # _align_voice_lines (step 17) because alignment redistributes measures
+    # across voice blocks, moving [K:...] inline switches between voices.
+    # We need to scan clef switches in the ORIGINAL voice-to-line mapping.
+    text = _correct_voice_clefs(text)
+
+    # 17. Re-wrap voice blocks so all voices have the SAME number of lines.
     #     abcjs uses source-code line breaks to determine visual line breaks.
     #     xml2abc often emits V:1 with 1 measure/line and V:2 with 5-8
     #     measures/line (because of different L: values), which causes

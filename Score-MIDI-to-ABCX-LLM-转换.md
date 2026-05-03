@@ -2,6 +2,8 @@
 
 > 将 ASAP / MAESTRO 等数据集的量化 Score MIDI 转换为干净 ABCX，用于 Perform-LM 训练数据构建。
 
+阅读README，现在ASAP Dataset有乐谱，并且可以和PMIDI精确对齐，帮我看看MAESTRO v3，能否根据现有的古典奏鸣曲找到相应的xml/abc曲谱（现有的ASAP是否已经有，没有的能否通过某种渠道获取）
+
 ---
 
 ## 一、整体流程

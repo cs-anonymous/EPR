@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Batch convert Score MIDI → ABCX → validate via to_standard.
+"""Batch convert Score MIDI → ABCX → validate via abc2abcx.
 
 Organizes output by composer under /home/sy/2026/Music/EPR/abcx/
 """
@@ -10,15 +10,15 @@ import shutil
 
 # Add paths
 sys.path.insert(0, os.path.dirname(__file__))
-sys.path.insert(0, "/home/sy/2026/Music/abcx/scripts")
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "abcx", "scripts"))
 
 from midi_to_abcx import midi_to_abcx
 
-# Import validation functions from to_standard
+# Import validation functions from abc2abcx
 try:
-    from to_standard import to_standard_abcx, AbcError
+    from abc2abcx import to_standard_abcx, AbcError
 except ImportError:
-    print("ERROR: Cannot import to_standard.py")
+    print("ERROR: Cannot import abc2abcx.py")
     sys.exit(1)
 
 

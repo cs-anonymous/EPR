@@ -614,7 +614,7 @@ C'1/8                                  ↑     ↑      ↑     ↑
 
 ### 数据源 A：ASAP 的 ABCX 构造
 
-**现状**：已跑通 `midi_to_abcx.py`，235 首 `midi_score.mid` → 235 个 ABCX，`to_standard.py` 全部验证通过。
+**现状**：已跑通 `midi_to_abcx.py`，235 首 `midi_score.mid` → 235 个 ABCX，`abc2abcx.py` 全部验证通过。
 
 **但这只是"初级 ABCX"**。Score MIDI → ABCX 是**有损的**：
 - ✅ 保留：pitch、rhythm、bar/beat、key、time signature
