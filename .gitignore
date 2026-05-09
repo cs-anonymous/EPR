@@ -4,6 +4,10 @@ BaiduPCS*
 piano_scores
 legato
 third_party
-wave-roll-studio
+wave-roll
 output
 .venv
+PianoCoRe
+Qwen3.5-4B
+sft_data
+*.log
