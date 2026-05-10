@@ -11,33 +11,37 @@
   3. 能构造大量高质量任务样本
 - **SFT 不能替代 CPT 的情况**：模型完全不熟悉表示语言；大量无标注数据但配对数据少；需要通用领域补全能力；SFT 数据覆盖不足。
 
-### 1.2 两步 + 分支路线
+### 1.2 实验驱动的训练策略
+
+**核心问题**：Language Learning SFT 是否必要？Measure-level 还是 Phrase-level？
+
+**实验设计**：通过对比实验验证不同训练路径的效果（详见 [第 9 节](#9-实验设计与评估)）。
+
+**两种可能的训练路线**：
 
 ```
-Base LLM
-  → Step 1：SPIRE Language Learning SFT
-      - Score Language
-      - Performance Language
-      - Knowledge QA / validation / repair
-      保存：spire-sft-language
+路线 A：直接 EPR
+Base LLM → EPR SFT → spire-sft-epr
 
-  → Step 2a：EPR Branch SFT
-      - score → expressive performance
-      保存：spire-sft-epr
-
-  → Step 2b：CSR Branch SFT
-      - performance → canonical score
-      保存：spire-sft-csr
+路线 B：Language Learning → EPR
+Base LLM → Language Learning SFT → EPR SFT → spire-sft-epr
 ```
 
-> 第一版不做正式 CPT，先用 **Language Learning SFT** 替代 CPT。等发现格式分布不稳、长序列结构断裂时，再补小规模 CPT 作为 ablation。
+**粒度选择**：
+- Measure-level (M)：小节级，输入输出短，训练稳定
+- Phrase-level (H)：乐句级（4-8 小节），context 更长，可能表达性更好
+
+**V1 实验目标**：
+1. 验证 Language Learning 是否有帮助（路线 A vs 路线 B）
+2. 验证粒度选择的影响（Measure vs Phrase）
+3. 根据实验结果决定最终训练策略
 
 关键原则：
 
-1. **Step 1 只学习语言和规则**：包括 Score Language、Performance Language、Knowledge QA、format validation、repair、mask reconstruction；不训练 EPR / CSR 主任务。
-2. **Step 2 才进入任务分支**：从同一个 `spire-sft-language` checkpoint 分叉，分别训练 EPR 和 CSR。
-3. **不要做一个混合 EPR/CSR/Language 的大 SFT**：EPR 与 CSR 方向相反，目标分布不同，混在一个阶段容易互相稀释。
-4. **Language replay 是分支阶段的可选正则项**：如果 EPR/CSR 分支出现格式遗忘，加入少量 Language / QA replay；如果格式稳定，可以不加。
+1. **先做实验，再定策略**：不预设 Language Learning 必要性，用数据说话
+2. **粒度独立实验**：Measure-level 和 Phrase-level 分别实验，不混合
+3. **EPR 优先，CSR 后置**：V1 只做 EPR，CSR 作为 V2 目标
+4. **最小化实验成本**：V1 只训练 4 个核心模型，快速验证假设
 
 ### 1.3 评估基线
 
@@ -113,15 +117,25 @@ Base LLM
 
 核心任务分为 4 大类：**Score Language**、**Performance Language**、**EPR**、**CSR**。
 
+> **重要**：Measure-level 和 Phrase-level 任务是**独立的**，不混合。Measure Lang 只包含 Measure-level 任务，Phrase Lang 只包含 Phrase-level 任务。
+
 ### 3.1 Score Language
 
 学习乐谱表示的语法、结构、乐句延续。
 
+#### Measure-level Score Language
+
 | 任务 | 公式 | 优先级 | 说明 |
 |---|---|---|---|
-| Phrase continuation | $\sigma_{\text{head}} + \sigma_{H_k} \rightarrow \sigma_{H_{k+1}}$ | 中 | 学乐谱乐句延续、重复与变奏 |
-| Measure continuation | $\sigma_{\text{head}} + \sigma_{M_k} \rightarrow \sigma_{M_{k+1}}$ | 低 | 学局部格式、measure boundary |
-| Measure mask reconstruction | $\sigma_{\text{head}} + f(\sigma_{M_k}) \rightarrow \sigma_{M_k}$ | 中 | 用 $f$ 遮去部分信息后恢复 |
+| Measure continuation | $\sigma_{\text{head}} + \sigma_{M_k} \rightarrow \sigma_{M_{k+1}}$ | 高 | 学局部格式、measure boundary |
+| Measure mask reconstruction | $\sigma_{\text{head}} + f(\sigma_{M_k}) \rightarrow \sigma_{M_k}$ | 高 | 用 $f$ 遮去部分信息后恢复 |
+
+#### Phrase-level Score Language
+
+| 任务 | 公式 | 优先级 | 说明 |
+|---|---|---|---|
+| Phrase continuation | $\sigma_{\text{head}} + \sigma_{H_k} \rightarrow \sigma_{H_{k+1}}$ | 高 | 学乐谱乐句延续、重复与变奏 |
+| Phrase mask reconstruction | $\sigma_{\text{head}} + f(\sigma_{H_k}) \rightarrow \sigma_{H_k}$ | 高 | 用 $f$ 遮去部分信息后恢复 |
 
 > $f$ 的具体变体见 [2.3 Mask 函数定义](#23-mask-函数定义)，包括 acc / treble / bass / label 等。
 
@@ -129,29 +143,46 @@ Base LLM
 
 学习 performance MIDI 的事件分布、属性连续性。
 
+#### Measure-level Performance Language
+
 | 任务 | 公式 | 优先级 | 说明 |
 |---|---|---|---|
-| Phrase continuation | $\phi_{H_k} \rightarrow \phi_{H_{k+1}}$ | 低-中 | 学 performance 分布（辅助任务） |
-| Measure continuation | $\phi_{M_k} \rightarrow \phi_{M_{k+1}}$ | 中 | 学局部演奏事件分布 |
+| Measure continuation | $\phi_{M_k} \rightarrow \phi_{M_{k+1}}$ | 高 | 学局部演奏事件分布 |
+| Measure mask reconstruction | $g(\phi_{M_k}) \rightarrow \phi_{M_k}$ | 高 | 用 $g$ 遮去某一类属性后恢复 |
+
+#### Phrase-level Performance Language
+
+| 任务 | 公式 | 优先级 | 说明 |
+|---|---|---|---|
+| Phrase continuation | $\phi_{H_k} \rightarrow \phi_{H_{k+1}}$ | 高 | 学 performance 分布 |
 | Phrase mask reconstruction | $g(\phi_{H_k}) \rightarrow \phi_{H_k}$ | 高 | 用 $g$ 遮去某一类属性后恢复 |
 
 > $g$ 的具体变体见 [2.3 Mask 函数定义](#23-mask-函数定义)，包括 timing / velocity / duration / pedal 等。
 
 ### 3.3 EPR：Expressive Performance Rendering
 
-从 score 生成 expressive performance。分为完整渲染与属性生成两类。
+从 score 生成 expressive performance。
 
-#### 完整渲染
+#### Measure-level EPR
 
 | 任务 | 公式 | 优先级 | 说明 |
 |---|---|---|---|
-| **Score-conditioned EPR（主任务）** | $\sigma_{\text{head}} + \sigma_{H_{k-1}} + \sigma_{H_k} + \sigma_{H_{k+1}} + \phi_{H_{k-1}} \rightarrow \phi_{H_k}$ | **最高** | 根据前后乐句 + 前句演奏风格生成当前演奏 |
-| Score-only EPR | $\sigma_{\text{head}} + \sigma_{H_{k-1}} + \sigma_{H_k} + \sigma_{H_{k+1}} \rightarrow \phi_{H_k}$ | 高 | 无 performance context 时渲染任意乐句 |
+| **Measure EPR（主任务）** | $\sigma_{\text{head}} + \sigma_{M_{k-1}} + \sigma_{M_k} + \sigma_{M_{k+1}} \rightarrow \phi_{M_k}$ | **最高** | 3-measure context window，输出中间小节 |
+| Cold-start EPR | $\sigma_{\text{head}} + \sigma_{M_1} + \sigma_{M_2} \rightarrow \phi_{M_1}$ | 高 | 曲子开头渲染（无前文） |
+| EPR attribute generation | $\sigma_{\text{head}} + \sigma_{M_k} + g(\phi_{M_k}) \rightarrow \phi_{M_k}$ | 中 | 用 $g$ mask 生成 timing / velocity / duration / pedal 等演奏属性 |
+
+#### Phrase-level EPR
+
+| 任务 | 公式 | 优先级 | 说明 |
+|---|---|---|---|
+| **Phrase EPR（主任务）** | $\sigma_{\text{head}} + \sigma_{H_{k-1}} + \sigma_{H_k} + \sigma_{H_{k+1}} \rightarrow \phi_{H_k}$ | **最高** | 3-phrase context window，输出中间乐句 |
 | Cold-start EPR | $\sigma_{\text{head}} + \sigma_{H_1} + \sigma_{H_2} \rightarrow \phi_{H_1}$ | 高 | 曲子开头渲染（无前文） |
-| Intra-phrase EPR | $\sigma_{\text{head}} + \sigma_{H_k} + \text{partial } \phi_{H_k} \rightarrow \text{remaining } \phi_{H_k}$ | 高 | 长乐句内部续写 |
-| EPR attribute generation | $\sigma_{\text{head}} + \sigma_{H_k} + g(\phi_{H_k}) \rightarrow \phi_{H_k}$ | 中 | 用 2.3 中定义的 $g$ mask 生成 timing / velocity / duration / pedal 等演奏属性 |
+| Intra-phrase EPR | $\sigma_{\text{head}} + \sigma_{H_k} + \text{partial } \phi_{H_k} \rightarrow \text{remaining } \phi_{H_k}$ | 中 | 长乐句内部续写（仅 Phrase-level 需要） |
+| EPR attribute generation | $\sigma_{\text{head}} + \sigma_{H_k} + g(\phi_{H_k}) \rightarrow \phi_{H_k}$ | 中 | 用 $g$ mask 生成演奏属性 |
 
 > Priority: **timing > velocity > duration > pedal**。pitch mask 不推荐——pitch 大多由 score 决定，不是 expressive performance 的主要难点。
+> 
+> **V1 简化**：只做主任务（Measure EPR 或 Phrase EPR），不做 attribute generation 和 intra-phrase EPR。
 
 ### 3.4 CSR：Canonical Score Reconstruction
 
@@ -390,12 +421,175 @@ EPR Branch DPO: 解决"哪个 render 更像人类偏好的演奏"
 
 ---
 
-## 8. 术语定义
+## 9. 实验设计与评估
+
+### 9.1 实验目标
+
+通过对比实验回答以下问题：
+1. **Language Learning 是否必要？** 直接 EPR vs Language → EPR
+2. **粒度如何选择？** Measure-level vs Phrase-level
+3. **最优训练路径是什么？** 根据实验结果决定最终策略
+
+### 9.2 模型状态定义
+
+| 模型 | 训练路径 | 说明 |
+|------|---------|------|
+| **M0** | Qwen3.5-4B | 基础模型 |
+| | | |
+| **Measure-level 路径** | | |
+| **M_M1** | M0 → Measure EPR | 直接学小节级 EPR（无 Language Learning） |
+| **M_M2** | M0 → Measure Lang → Measure EPR | 先学小节级语言，再学 EPR |
+| M_M3 | M0 → Measure Lang+QA → Measure EPR | 加入 QA/validation（V2） |
+| | | |
+| **Phrase-level 路径** | | |
+| **M_H1** | M0 → Phrase EPR | 直接学乐句级 EPR（无 Language Learning） |
+| **M_H2** | M0 → Phrase Lang → Phrase EPR | 先学乐句级语言，再学 EPR |
+| M_H3 | M0 → Phrase Lang+QA → Phrase EPR | 加入 QA/validation（V2） |
+
+**V1 优先级**：只训练 **M_M1, M_M2, M_H1, M_H2** 四个核心模型。
+
+### 9.3 训练任务定义
+
+#### Measure Lang（小节级语言学习）
+
+```python
+Measure_Lang = {
+    # Score Language
+    "score_measure_continuation": {
+        "input": "σ_head + σ_{M_k}",
+        "output": "σ_{M_{k+1}}",
+        "weight": 0.25,
+    },
+    "score_measure_mask": {
+        "input": "σ_head + f(σ_{M_k})",  # f ∈ {acc, treble, bass, label}
+        "output": "σ_{M_k}",
+        "weight": 0.25,
+    },
+    
+    # Performance Language
+    "perf_measure_continuation": {
+        "input": "φ_{M_k}",
+        "output": "φ_{M_{k+1}}",
+        "weight": 0.25,
+    },
+    "perf_measure_mask": {
+        "input": "g(φ_{M_k})",  # g ∈ {timing, velocity, duration, pedal}
+        "output": "φ_{M_k}",
+        "weight": 0.25,
+    },
+}
+```
+
+#### Phrase Lang（乐句级语言学习）
+
+```python
+Phrase_Lang = {
+    # Score Language
+    "score_phrase_continuation": {
+        "input": "σ_head + σ_{H_k}",
+        "output": "σ_{H_{k+1}}",
+        "weight": 0.25,
+    },
+    "score_phrase_mask": {
+        "input": "σ_head + f(σ_{H_k})",
+        "output": "σ_{H_k}",
+        "weight": 0.25,
+    },
+    
+    # Performance Language
+    "perf_phrase_continuation": {
+        "input": "φ_{H_k}",
+        "output": "φ_{H_{k+1}}",
+        "weight": 0.25,
+    },
+    "perf_phrase_mask": {
+        "input": "g(φ_{H_k})",
+        "output": "φ_{H_k}",
+        "weight": 0.25,
+    },
+}
+```
+
+#### Measure EPR（小节级演奏渲染）
+
+```python
+Measure_EPR = {
+    "measure_epr_main": {
+        "input": "σ_head + σ_{M_{k-1}} + σ_{M_k} + σ_{M_{k+1}}",
+        "output": "φ_{M_k}",
+        "weight": 0.8,
+    },
+    "measure_epr_coldstart": {
+        "input": "σ_head + σ_{M_1} + σ_{M_2}",
+        "output": "φ_{M_1}",
+        "weight": 0.2,
+    },
+}
+```
+
+#### Phrase EPR（乐句级演奏渲染）
+
+```python
+Phrase_EPR = {
+    "phrase_epr_main": {
+        "input": "σ_head + σ_{H_{k-1}} + σ_{H_k} + σ_{H_{k+1}}",
+        "output": "φ_{H_k}",
+        "weight": 0.8,
+    },
+    "phrase_epr_coldstart": {
+        "input": "σ_head + σ_{H_1} + σ_{H_2}",
+        "output": "φ_{H_1}",
+        "weight": 0.2,
+    },
+}
+```
+
+### 9.4 V1 实验方案
+
+**训练模型**（4个）：
+1. **M_M1**: M0 → Measure EPR（直接）
+2. **M_M2**: M0 → Measure Lang → Measure EPR
+3. **M_H1**: M0 → Phrase EPR（直接）
+4. **M_H2**: M0 → Phrase Lang → Phrase EPR
+
+**对比维度**：
+- **M_M1 vs M_M2**：Measure-level 的 Language Learning 作用
+- **M_H1 vs M_H2**：Phrase-level 的 Language Learning 作用
+- **M_M1 vs M_H1**：粒度对直接 EPR 的影响
+- **M_M2 vs M_H2**：粒度对完整路径的影响
+
+**数据来源**：
+- 使用相同的 PianoCoRe 配对数据集
+- Measure-level：切分成小节级样本
+- Phrase-level：切分成乐句级样本（4-8 小节）
+- 数据量由数据集本身决定，不人为控制 token 数
+
+**训练配置**：
+- Base model: Qwen3.5-4B
+- Method: LoRA (r=64, alpha=128)
+- Learning rate: 2e-5
+- Epochs: 3
+
+**决策逻辑**：
+- 如果 M_M2 >> M_M1 且 M_H2 >> M_H1 → Language Learning 有效
+- 如果 M_M1 ≈ M_M2 且 M_H1 ≈ M_H2 → Language Learning 无效，直接 EPR
+- 如果 Measure >> Phrase → 选择 Measure-level
+- 如果 Phrase >> Measure → 选择 Phrase-level
+
+---
+
+## 10. 术语定义
 
 | 缩写 | 全称 | 含义 | 公式 |
 |---|---|---|---|
-| **EPR** | Expressive Performance Rendering | 从 score phrase 生成 expressive performance phrase | $\Sigma \rightarrow \Phi$ |
-| **CSR** | Canonical Score Reconstruction | 从 performance phrase 恢复规范 score phrase | $\Phi \rightarrow \Sigma$ |
+| **EPR** | Expressive Performance Rendering | 从 score 生成 expressive performance | $\Sigma \rightarrow \Phi$ |
+| **CSR** | Canonical Score Reconstruction | 从 performance 恢复规范 score | $\Phi \rightarrow \Sigma$ |
 | **PM2S** | Performance MIDI-to-Score Conversion | 已有 MIR 术语（Liu et al. ISMIR 2022），与 CSR 类似但偏工程命名 | — |
+| **M_M1** | Measure Model 1 | 直接 Measure EPR（无 Language Learning） | M0 → Measure EPR |
+| **M_M2** | Measure Model 2 | Measure Lang → Measure EPR | M0 → Measure Lang → Measure EPR |
+| **M_H1** | pHrase Model 1 | 直接 Phrase EPR（无 Language Learning） | M0 → Phrase EPR |
+| **M_H2** | pHrase Model 2 | Phrase Lang → Phrase EPR | M0 → Phrase Lang → Phrase EPR |
 
 > CSR 与 EPR 对称，强调从带有演奏偏差的 performance 中恢复规范化、可记谱的 score 表示。PM2S 是已有文献术语但影响力有限（~20 次引用），可在 related work 中提及，不作为主任务名。
+> 
+> 模型命名：M = Measure, H = pHrase（避免与 MIDI-TSV 中的 H=phrase header 混淆），数字表示训练路径（1=直接EPR，2=Lang→EPR）。

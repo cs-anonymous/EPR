@@ -37,6 +37,8 @@ import os
 import sys
 import tempfile
 import traceback
+import zipfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Optional
 
@@ -1193,22 +1195,58 @@ def _align_voice_lines(text: str) -> str:
 # End-to-end conversion
 # ---------------------------------------------------------------------------
 
-def musicxml_to_abcx(xml_path: Path, *, validate: bool = True) -> str:
+def _strip_harmony_nodes(xml_path: Path, out_dir: Path) -> Path:
+    """Write a copy of `xml_path` with MusicXML `<harmony>` nodes removed."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    def _remove_harmony(xml_bytes: bytes) -> bytes:
+        root = ET.fromstring(xml_bytes)
+        for parent in list(root.iter()):
+            for child in list(parent):
+                if child.tag.rsplit("}", 1)[-1] == "harmony":
+                    parent.remove(child)
+        return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+    if xml_path.suffix.lower() == ".mxl":
+        out_path = out_dir / xml_path.name
+        with zipfile.ZipFile(xml_path, "r") as zin, zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zout:
+            xml_names = [
+                n for n in zin.namelist()
+                if n.endswith((".xml", ".musicxml")) and not n.startswith("META-INF/")
+            ]
+            main_xml = xml_names[0] if xml_names else None
+            for info in zin.infolist():
+                data = zin.read(info.filename)
+                if info.filename == main_xml:
+                    data = _remove_harmony(data)
+                zout.writestr(info, data)
+        return out_path
+
+    out_path = out_dir / xml_path.name
+    out_path.write_bytes(_remove_harmony(xml_path.read_bytes()))
+    return out_path
+
+
+def musicxml_to_abcx(xml_path: Path, *, validate: bool = True, drop_harmony: bool = False) -> str:
     """Convert one MusicXML file to ABCX text."""
     with tempfile.TemporaryDirectory(prefix="xml2abcx_") as tmp:
-        abc_path = _xml2abc_convert(xml_path, Path(tmp))
+        tmp_path = Path(tmp)
+        work_path = _strip_harmony_nodes(xml_path, tmp_path / "no_harmony") if drop_harmony else xml_path
+        abc_path = _xml2abc_convert(work_path, tmp_path)
         abc_text = abc_path.read_text(encoding="utf-8")
     return to_standard_abcx(clean_for_abcjs(abc_text), validate=validate)
 
 
-def musicxml_to_abc(xml_path: Path) -> str:
+def musicxml_to_abc(xml_path: Path, *, drop_harmony: bool = False) -> str:
     """Convert one MusicXML file to (rich) ABC text, no ABCX normalisation.
 
     The output is post-processed by `clean_for_abcjs` so the abcx plugin's
     ABC-mode rendering (abcjs.parseOnly) emits zero warnings.
     """
     with tempfile.TemporaryDirectory(prefix="xml2abc_") as tmp:
-        abc_path = _xml2abc_convert(xml_path, Path(tmp))
+        tmp_path = Path(tmp)
+        work_path = _strip_harmony_nodes(xml_path, tmp_path / "no_harmony") if drop_harmony else xml_path
+        abc_path = _xml2abc_convert(work_path, tmp_path)
         abc_text = abc_path.read_text(encoding="utf-8")
     return clean_for_abcjs(abc_text)
 
@@ -1233,7 +1271,7 @@ def _composer_categorised_path(src_root: Path, xml_path: Path,
 
 
 def batch_convert(src_root: Path, out_root: Path, *, pattern: str,
-                   validate: bool, abc_only: bool) -> None:
+                   validate: bool, abc_only: bool, drop_harmony: bool) -> None:
     files = _discover_xml_files(src_root, pattern)
     if not files:
         print(f"No files matching {pattern!r} under {src_root}", file=sys.stderr)
@@ -1252,9 +1290,9 @@ def batch_convert(src_root: Path, out_root: Path, *, pattern: str,
         )
         try:
             if abc_only:
-                text = musicxml_to_abc(xml_path)
+                text = musicxml_to_abc(xml_path, drop_harmony=drop_harmony)
             else:
-                text = musicxml_to_abcx(xml_path, validate=validate)
+                text = musicxml_to_abcx(xml_path, validate=validate, drop_harmony=drop_harmony)
         except AbcError as e:
             validation_failed += 1
             failures.append((xml_path, "validate", str(e)))
@@ -1318,6 +1356,8 @@ def main(argv: Optional[list] = None) -> int:
     parser.add_argument("--abc-only", action="store_true",
                         help="Emit .abc (rich, xml2abc output) instead of "
                              "normalised .abcx.")
+    parser.add_argument("--drop-harmony", action="store_true",
+                        help="Remove MusicXML <harmony> chord/analysis nodes before conversion.")
     args = parser.parse_args(argv)
 
     validate = not args.no_validate
@@ -1332,7 +1372,8 @@ def main(argv: Optional[list] = None) -> int:
         batch_convert(src_root, out_root,
                        pattern=args.pattern,
                        validate=validate,
-                       abc_only=args.abc_only)
+                       abc_only=args.abc_only,
+                       drop_harmony=args.drop_harmony)
         return 0
 
     # Single-file mode
@@ -1342,10 +1383,10 @@ def main(argv: Optional[list] = None) -> int:
 
     try:
         if args.abc_only:
-            text = musicxml_to_abc(xml_path)
+            text = musicxml_to_abc(xml_path, drop_harmony=args.drop_harmony)
             default_suffix = ".abc"
         else:
-            text = musicxml_to_abcx(xml_path, validate=validate)
+            text = musicxml_to_abcx(xml_path, validate=validate, drop_harmony=args.drop_harmony)
             default_suffix = ".abcx"
     except AbcError as e:
         print(f"xml_to_abcx: validation error: {e}", file=sys.stderr)

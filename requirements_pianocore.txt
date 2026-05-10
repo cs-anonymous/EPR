@@ -1,0 +1,6 @@
+# PianoCoRe 数据处理依赖
+pandas
+numpy
+tqdm
+pretty_midi
+music21
