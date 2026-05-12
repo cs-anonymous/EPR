@@ -91,7 +91,7 @@ def _xml2abc_convert(xml_path: Path, out_dir: Path) -> Path:
             "xml2abc",
             "-o", str(out_dir),
             "-m", "2",           # emit %%MIDI directives (voice programs etc.)
-            "-u",                # unfold simple repeats -> linear performance
+            # no -u: keep repeat bars (`:|` `|:` `[1` `[2`) as-is; ABC handles repeats natively
             str(xml_path),
         ]
         # Swallow xml2abc's verbose output

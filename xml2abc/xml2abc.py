@@ -532,6 +532,8 @@ def insTup (ix, notes, fact):   # read one nested tuplet
         nx.tup.remove ('start') # do recursive calls when starts remain
     tix = ix                    # index of first tuplet note
     fn, fd = fact               # xml time-mod of the higher level
+    if nx.fact is None:         # handle malformed tuplet (missing time-modification)
+        return ix, 0            # skip this tuplet
     fnum, fden = nx.fact        # xml time-mod of the current level
     tupfact = fnum//fn, fden//fd  # abc time mod of this level
     while ix < len (notes):
@@ -1185,7 +1187,10 @@ class Parser:
                 else:                               # closing direction found before opening
                     s.dirStk [k] = ('stop', s.msc.tijd)
                     x = ''                          # delay code generation until opening found
-            else: raise ValueError ('wrong direction type')
+            else:
+                # Unknown direction type - skip it instead of raising error
+                info ('unknown %s direction type "%s" in part %d, measure %d' % (dtype, type, s.msr.ixp+1, s.msr.ixm+1))
+                x = ''
             addDirection (x, vs, None, stfnum)
         tempo, wrdstxt = None, ''
         plcmnt = e.get ('placement')
@@ -1218,8 +1223,10 @@ class Parser:
                 else:           tempo_units = units ['quarter']
                 if metr.find ('beat-unit-dot') != None:
                     tempo_units = simplify (tempo_units [0] * 3, tempo_units [1] * 2)
-                tmpro = re.search ('[.\d]+', metr.findtext ('per-minute'))  # look for a number
-                if tmpro: tempo = tmpro.group () # overwrites the value set by the sound element of this direction
+                per_minute = metr.findtext ('per-minute')
+                if per_minute:  # check for None before regex
+                    tmpro = re.search ('[.\d]+', per_minute)  # look for a number
+                    if tmpro: tempo = tmpro.group () # overwrites the value set by the sound element of this direction
             t = dirtyp.find ('wedge')
             if t != None: startStop ('wedge', vs)
             allwrds = dirtyp.findall ('words')        # insert text annotations
