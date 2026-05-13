@@ -210,6 +210,10 @@ class Music:
 
     def appendObj (s, v, obj, dur):
         obj.tijd = s.tijd
+        # Initialize voice if it doesn't exist
+        if v not in s.voices:
+            s.voices[v] = []
+            s.vtimes[v] = 0
         s.voices [v].append (obj)
         s.incTime (dur)
         if s.tijd > s.vtimes[v]: s.vtimes[v] = s.tijd   # don't update for inserted earlier items
@@ -323,6 +327,15 @@ class Music:
             while vn:               # while still measures available
                 ib = 1
                 chunk = vn [0]
+                # Fix: if first measure starts with a bare volta number, ensure it has a barline
+                if chunk and chunk[0].isdigit():
+                    # Find the volta number and insert a barline before it
+                    import re
+                    m = re.match(r'^(\d+(?:,\d+)*|"[^"]*")\s+', chunk)
+                    if m:
+                        volta = m.group(1)
+                        rest = chunk[m.end():]
+                        chunk = '|' + volta + ' ' + rest
                 while ib < len (vn):
                     if s.cpl > 0 and len (chunk) + len (vn [ib]) >= s.cpl: break    # line full (number of chars)
                     if s.bpl > 0 and ib >= s.bpl: break                             # line full (number of bars)
@@ -979,6 +992,8 @@ class Parser:
             if 'stop' in [e.get ('type') for e in tieElms]: return p    # don't alter tied notes
             info ('accidental %d added in part %d, measure %d, voice %d note %s' % (alt, s.msr.ixp+1, s.msr.ixm+1, v+1, p))
         s.curalts [(p, v)] = alt
+        # Clamp alt to valid range [-2, 2] for accidental symbols
+        alt = max(-2, min(2, alt))
         p = ['__','_','=','^','^^'][alt+2] + p # and finally ... prepend the accidental
         return p
 

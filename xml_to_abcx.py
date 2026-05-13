@@ -1030,13 +1030,12 @@ def clean_for_abcjs(abc_text: str) -> str:
     # We need to scan clef switches in the ORIGINAL voice-to-line mapping.
     text = _correct_voice_clefs(text)
 
-    # 17. Re-wrap voice blocks so all voices have the SAME number of lines.
-    #     abcjs uses source-code line breaks to determine visual line breaks.
-    #     xml2abc often emits V:1 with 1 measure/line and V:2 with 5-8
-    #     measures/line (because of different L: values), which causes
-    #     misaligned rendering. We parse measures per voice, find the max
-    #     line count, and re-distribute measures evenly.
-    text = _align_voice_lines(text)
+    # 17. Skip voice line re-alignment — xml2abc already emits the correct
+    #     measure structure per voice.  Re-aligning by splitting on `|` and
+    #     redistributing creates phantom measures when volta markers (|1, |2)
+    #     end up on their own lines.  Downstream abc_to_abcx handles voice
+    #     alignment by flattening measures and matching by index.
+    # text = _align_voice_lines(text)
 
     return text
 
@@ -1072,24 +1071,74 @@ def _split_measures(voice_lines: list) -> list:
 
 
 def _realign_voice_lines(voice_lines: list, target_lines: int) -> list:
-    """Re-wrap a voice's measures into exactly `target_lines` text lines."""
-    measures = _split_measures(voice_lines)
-    if not measures or target_lines <= 0:
+    """Re-wrap a voice's music content into exactly `target_lines` text lines.
+
+    Rather than splitting on `|` (which isolates volta markers like `|1` on
+    their own lines), we join all content and re-wrap at bar boundaries,
+    keeping prefixes attached to their music.
+    """
+    # Join all music, stripping trailing comments for clean re-wrapping.
+    full = " ".join(l.rstrip() for l in voice_lines).strip()
+    if not full:
         return voice_lines
-    n = len(measures)
-    if n <= target_lines:
-        # Already fewer measures than target lines -- keep 1 per line.
-        return [m for m in measures]
-    # Distribute measures evenly.
+
+    # Split into segments at bar boundaries, keeping prefix with content.
+    segments = []
+    cur = ""
+    i = 0
+    n = len(full)
+    quote = False
+    bracket = 0
+    while i < n:
+        ch = full[i]
+        if ch == '"':
+            quote = not quote
+            cur += ch
+            i += 1
+            continue
+        if not quote:
+            if ch == "[":
+                bracket += 1
+            elif ch == "]" and bracket > 0:
+                bracket -= 1
+        if ch == "|" and not quote and bracket == 0:
+            # Consume bar + any following bar chars + digits (volta).
+            bar = "|"
+            i += 1
+            while i < n and full[i] in (":", "|", "]", "["):
+                bar += full[i]
+                i += 1
+            if i < n and full[i].isdigit():
+                bar += full[i]
+                i += 1
+            # Attach bar+volta to previous segment (as suffix).
+            if cur.strip():
+                segments.append(cur.strip() + " " + bar)
+            cur = ""
+        else:
+            cur += ch
+            i += 1
+    if cur.strip():
+        segments.append(cur.strip())
+
+    if not segments:
+        return voice_lines
+
+    # If we have fewer segments than target lines, use 1 line per segment.
+    # Otherwise distribute evenly across target_lines.
+    result_lines = min(len(segments), target_lines)
+    if result_lines <= 1:
+        return [" ".join(segments)]
+
+    n = len(segments)
+    per_line = n // result_lines
+    remainder = n % result_lines
     result = []
-    measures_per_line = n // target_lines
-    remainder = n % target_lines
     idx = 0
-    for i in range(target_lines):
-        count = measures_per_line + (1 if i < remainder else 0)
-        chunk = measures[idx: idx + count]
+    for i in range(result_lines):
+        count = per_line + (1 if i < remainder else 0)
+        result.append(" ".join(segments[idx:idx + count]))
         idx += count
-        result.append(" ".join(chunk))
     return result
 
 

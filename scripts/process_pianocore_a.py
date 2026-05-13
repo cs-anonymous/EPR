@@ -533,7 +533,7 @@ class PianoCoreProcessor:
                 ],
                 capture_output=True,
                 text=True,
-                timeout=60,
+                timeout=300,  # 增加到 5 分钟，处理长作品（Liszt B小调奏鸣曲等）
             )
             if result.returncode != 0:
                 print(f"Error converting {midi_file}: {result.stderr}")

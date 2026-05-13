@@ -593,3 +593,37 @@ Phrase_EPR = {
 > CSR 与 EPR 对称，强调从带有演奏偏差的 performance 中恢复规范化、可记谱的 score 表示。PM2S 是已有文献术语但影响力有限（~20 次引用），可在 related work 中提及，不作为主任务名。
 > 
 > 模型命名：M = Measure, H = pHrase（避免与 MIDI-TSV 中的 H=phrase header 混淆），数字表示训练路径（1=直接EPR，2=Lang→EPR）。
+
+
+
+还有一个步骤能不能顺便做了，形成一个完整的挖掘算法，就是：
+
+假设所有score mxl/xml 都已经生成了对应的abcx
+Step 1: 从 Score MIDI 定义"逻辑小节"，输出一个json
+Step 2: 使用启发式算法识别原始 abcx 的乐句。并根据score midi json对齐相应的abcx，现在abcx body的结构如下：
+
+H1\t|:M1|M2|$M3|M4:|$
+M1\t!p!"^Allegro ma con tenerezza" ([ce]4 ; z4 ; "^con pedale" z A,A,A,
+M2\t!<(! [df]4 ; z4 ; z A,A,A,
+M3\t[B^g]4!<)! ; z4 ; z A,A,A,
+M4\t[ca]4) ; z4 ; !f! z (A,E,C,
+H2\tM5|M6|$M7|...
+M5\t(c'e){/g}(fe) ; z4 ; A,,4)
+M6\t(e2 ^d) z ; z4 ; z (B,,B,A,
+M7\t(b=d){/f}(ed) ; z4 ; ^G,4)
+
+就是去掉小节号，每个小节的内容对齐一个score midi小节，如果有多余的音符或者小节则去掉
+除此之外，添加启发式乐句结构，包括标题 + 乐句结构，要求abcx通过乐句还原的方式能够复现原始的abcx，乐句结构使用 MX表示相应的小节内容，使用 $ 表示换行
+然后我们将乐句结构（每个小节分别在什么乐句里）也写入json中
+
+Step 3: Performance 根据json和相应的npz对齐，自动检测repeat，并使用相同的小节。注意根据小节分配乐句，即如果当前小节所在乐句与前一小节不同，或者当前小节是乐句的第一个小节，则添加乐句符号。
+
+这样performance midi 既有小节也有乐句。同时 performance 可以与 score 完全对齐
+
+
+
+PianoCoRe_aligned/Arndt,_Felix/Desecration
+
+这首曲子有点问题：tsv 与 abcx_aligned 不对齐
+tsv 中 M1 是 FGA,C
+而 abcx 中 M1 不存在，从M2开始，而M2都是休止符，所以真正M3 才对应 tsv的M1
