@@ -557,9 +557,14 @@ def build_midi_measure_content(
         abcx_num = midi_to_abcx.get(m.measure_num)
         if abcx_num is not None and abcx_num in abcx_measures:
             raw = abcx_measures[abcx_num]
-            # Strip repeat markers: `::` becomes space, trailing `:` is removed
+            # Strip repeat markers: `::` becomes space
             cleaned = raw.replace("::", " ").strip()
+            # Strip trailing `:` (leftover from `:|`)
             cleaned = re.sub(r':\s*$', '', cleaned).strip()
+            # Strip leading `:` (leftover from `|:` where `|` was consumed)
+            cleaned = cleaned.lstrip(':').strip()
+            # Strip leading volta numbers like `1 ` or `2 ` (from `|1`, `|2`)
+            cleaned = re.sub(r'^\d+\s+', '', cleaned).strip()
             content[m.measure_num] = cleaned
     return content
 
@@ -1479,6 +1484,11 @@ def process_metadata_task_v2(
         # TSV output name: same as perf MIDI but with .tsv extension
         tsv_name = Path(perf_midi_rel).name + ".tsv"
         output_tsv = output_piece_dir / tsv_name
+
+        # Skip TSV generation if already exists and non-empty
+        if output_tsv.exists() and output_tsv.stat().st_size > 0:
+            success_count += 1
+            continue
 
         if generate_performance_tsv_with_phrases(
             perf_midi, perf_measures, output_tsv, midi_tsv, score_structure.midi_to_abcx

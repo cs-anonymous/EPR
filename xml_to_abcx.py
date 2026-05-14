@@ -656,10 +656,9 @@ def clean_for_abcjs(abc_text: str) -> str:
                 i += 1
                 continue
             if not in_quote and ch == "$":
-                if i + 1 < len(line) and line[i + 1] == " ":
-                    i += 2
-                else:
-                    i += 1
+                # Remove $ but preserve following space to maintain spacing
+                # e.g., `:|2$ A,2E2` -> `:|2 A,2E2` (not `:|2A,2E2`)
+                i += 1
                 continue
             out.append(ch)
             i += 1
