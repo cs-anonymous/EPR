@@ -598,18 +598,18 @@ def main():
 使用示例:
 
   # 批量处理整个数据集（默认模式）
-  python generate_asap_annotations.py \\
+  python scripts/generate_asap_annotations.py \\
     --asap-root data/asap-dataset \\
     --nak-tool-dir data/asap-dataset/util/nak_alignment
 
   # 只处理前10个（测试）
-  python generate_asap_annotations.py \\
+  python scripts/generate_asap_annotations.py \\
     --asap-root data/asap-dataset \\
     --nak-tool-dir data/asap-dataset/util/nak_alignment \\
     --limit 10
 
   # 处理单个文件
-  python generate_asap_annotations.py \\
+  python scripts/generate_asap_annotations.py \\
     --score-midi data/asap-dataset/Chopin/Etudes_op_25/1/midi_score.mid \\
     --perf-midi data/asap-dataset/Chopin/Etudes_op_25/1/Erice03.mid \\
     --nak-tool-dir data/asap-dataset/util/nak_alignment \\

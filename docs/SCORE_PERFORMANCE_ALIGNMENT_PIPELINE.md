@@ -32,7 +32,7 @@ PianoCoRe_output/<Composer>/<Piece>/
 
                           ↓
 
-PianoCoRe_aligned/<Composer>/<Piece>/
+PianoCoRe/aligned/<Composer>/<Piece>/
 ├── score.abcx                      (原始 ABCX 副本)
 ├── score_aligned.abcx              (展开后的 ABCX，含乐句标记)
 ├── score_structure.json            (小节、乐句、映射关系)
@@ -259,9 +259,8 @@ M5	395	590
 # 处理 Tier A（推荐，16 进程并行）
 python scripts/align_score_performance.py \
     --metadata PianoCoRe/metadata.csv \
-    --refined-root PianoCoRe/refined \
-    --abcx-root PianoCoRe_output \
-    --output-dir PianoCoRe_aligned \
+    --pianocore-root PianoCoRe \
+    --output-dir PianoCoRe/aligned \
     --tier a \
     --jobs 16
 ```
@@ -272,37 +271,26 @@ python scripts/align_score_performance.py \
 # Tier A*
 python scripts/align_score_performance.py \
     --metadata PianoCoRe/metadata.csv \
-    --refined-root PianoCoRe/refined \
-    --abcx-root PianoCoRe_output \
-    --output-dir PianoCoRe_aligned \
+    --pianocore-root PianoCoRe \
+    --output-dir PianoCoRe/aligned \
     --tier a_star \
     --jobs 16
 
 # 全部 tier（不指定 --tier）
 python scripts/align_score_performance.py \
     --metadata PianoCoRe/metadata.csv \
-    --refined-root PianoCoRe/refined \
-    --abcx-root PianoCoRe_output \
-    --output-dir PianoCoRe_aligned \
+    --pianocore-root PianoCoRe \
+    --output-dir PianoCoRe/aligned \
     --jobs 16
-```
-
-### 处理特定作品（旧模式，目录扫描）
-
-```bash
-python scripts/align_score_performance.py \
-    --input-dir PianoCoRe_output \
-    --refined-root PianoCoRe/refined \
-    --output-dir PianoCoRe_aligned
 ```
 
 ### 处理特定作品
 
 ```bash
 python scripts/align_score_performance.py \
-    --input-dir PianoCoRe_output \
-    --refined-root PianoCoRe/refined \
-    --output-dir PianoCoRe_aligned \
+    --metadata PianoCoRe/metadata.csv \
+    --pianocore-root PianoCoRe \
+    --output-dir PianoCoRe/aligned \
     --piece-filter "Gavotte"
 ```
 
@@ -310,9 +298,9 @@ python scripts/align_score_performance.py \
 
 ```bash
 python scripts/align_score_performance.py \
-    --input-dir PianoCoRe_output \
-    --refined-root PianoCoRe/refined \
-    --output-dir PianoCoRe_aligned \
+    --metadata PianoCoRe/metadata.csv \
+    --pianocore-root PianoCoRe \
+    --output-dir PianoCoRe/aligned \
     --limit 20
 ```
 
@@ -322,15 +310,17 @@ python scripts/align_score_performance.py \
 
 ```bash
 # 检查小节边界连续性
-python scripts/align_score_performance.py --input-dir PianoCoRe_output \
-    --refined-root PianoCoRe/refined --output-dir PianoCoRe_aligned \
+python scripts/align_score_performance.py \
+    --metadata PianoCoRe/metadata.csv \
+    --pianocore-root PianoCoRe \
+    --output-dir PianoCoRe/aligned \
     --piece-filter "Gavotte"
 
 # 查看生成的结构文件
-cat PianoCoRe_aligned/Handel,_George_Frideric/Gavotte_in_G_major,_HWV_491/score_structure.json | python -m json.tool
+cat PianoCoRe/aligned/Handel,_George_Frideric/Gavotte_in_G_major,_HWV_491/score_structure.json | python -m json.tool
 
 # 检查 TSV 文件
-head -30 PianoCoRe_aligned/Handel,_George_Frideric/Gavotte_in_G_major,_HWV_491/Aria_*.tsv
+head -30 PianoCoRe/aligned/Handel,_George_Frideric/Gavotte_in_G_major,_HWV_491/Aria_*.tsv
 ```
 
 ## 7. 数据覆盖与限制

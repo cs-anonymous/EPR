@@ -7,10 +7,13 @@ Organizes output by composer under /home/sy/2026/Music/EPR/abcx/
 import os
 import sys
 import shutil
+from pathlib import Path
 
 # Add paths
-sys.path.insert(0, os.path.dirname(__file__))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "abcx", "scripts"))
+_HERE = Path(__file__).resolve().parent
+_ROOT = _HERE.parent
+sys.path.insert(0, str(_HERE))
+sys.path.insert(0, str(_ROOT / "abcx" / "scripts"))
 
 from midi_to_abcx import midi_to_abcx
 

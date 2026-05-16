@@ -614,7 +614,7 @@ C'1/8                                  ↑     ↑      ↑     ↑
 
 ### 数据源 A：ASAP 的 ABCX 构造
 
-**现状**：已跑通 `midi_to_abcx.py`，235 首 `midi_score.mid` → 235 个 ABCX，`abc2abcx.py` 全部验证通过。
+**现状**：已跑通 `scripts/midi_to_abcx.py`，235 首 `midi_score.mid` → 235 个 ABCX，`abc2abcx.py` 全部验证通过。
 
 **但这只是"初级 ABCX"**。Score MIDI → ABCX 是**有损的**：
 - ✅ 保留：pitch、rhythm、bar/beat、key、time signature
@@ -625,7 +625,7 @@ C'1/8                                  ↑     ↑      ↑     ↑
 **改进路径**：
 1. **首选方案：MusicXML → ABCX**（ASAP 有 222 个 MusicXML score！）
    - MusicXML 保留了所有谱面信号
-   - 需要写/扩展 `musicxml_to_abcx.py`（目前只有 `midi_to_abcx.py`）
+   - 需要写/扩展 `musicxml_to_abcx.py`（此前只有 `scripts/midi_to_abcx.py`）
    - 这是**一周工作量**，产出的 ABCX 质量会显著提升
 
 2. **次选方案：LLM 反推**

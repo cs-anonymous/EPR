@@ -7,8 +7,8 @@ For each piece, identify:
 - Statistics on how many performances use each version
 
 Output:
-- variants_report.txt: Human-readable summary
-- variants_data.json: Machine-readable data for filtering
+- output/reports/variants_report.txt: Human-readable summary
+- output/reports/variants_data.json: Machine-readable data for filtering
 """
 from __future__ import annotations
 
@@ -151,7 +151,10 @@ def main():
     report_lines.append("")
 
     # Write report
-    report_path = Path("variants_report.txt")
+    out_dir = Path("output/reports")
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    report_path = out_dir / "variants_report.txt"
     report_path.write_text("\n".join(report_lines), encoding="utf-8")
     print(f"Report written to {report_path}")
 
@@ -167,7 +170,7 @@ def main():
         "pieces": all_pieces,
     }
 
-    json_path = Path("variants_data.json")
+    json_path = out_dir / "variants_data.json"
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
     print(f"Data written to {json_path}")

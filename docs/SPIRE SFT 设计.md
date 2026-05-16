@@ -622,7 +622,7 @@ Step 3: Performance 根据json和相应的npz对齐，自动检测repeat，并�
 
 
 
-PianoCoRe_aligned/Arndt,_Felix/Desecration
+PianoCoRe/aligned/Arndt,_Felix/Desecration
 
 这首曲子有点问题：tsv 与 abcx_aligned 不对齐
 tsv 中 M1 是 FGA,C
