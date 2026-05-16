@@ -120,7 +120,11 @@ def process_one(xml_rel: str, main_midi_rel: str, mini_midi_rel: str | None,
 
         aligned_path = out_dir / "score_aligned.abcx"
         if force or not aligned_path.exists():
-            write_aligned_abcx(abcx_path, aligned_path, main_struct.phrases, main_struct.midi_measure_content)
+            if not write_aligned_abcx(abcx_path, aligned_path, main_struct.phrases, main_struct.midi_measure_content):
+                stale_mini = out_dir / "score_aligned_mini.abcx"
+                if stale_mini.exists():
+                    stale_mini.unlink()
+                return "not_two_staff"
 
         # Mini version
         if mini_midi_rel:

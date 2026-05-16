@@ -14,10 +14,15 @@ import json
 import re
 import subprocess
 import tempfile
+import sys
 from pathlib import Path
 from typing import List, Dict, Tuple
 from tqdm import tqdm
 import pretty_midi
+
+sys.path.insert(0, str(Path(__file__).parent / "scripts"))
+
+from aligned_abcx_format import AlignedAbcxError, build_orphan_aligned_abcx
 
 
 def abcx_to_midi(abcx_path: Path, output_midi: Path) -> bool:
@@ -245,23 +250,7 @@ def process_orphan_abcx(abcx_path: Path, output_dir: Path,
                        phrase_size: int = 4) -> bool:
     """处理单个未配对的 ABCX 文件"""
     try:
-        # 解析原始 ABCX
-        header = parse_abcx_header(abcx_path)
-        measures = parse_abcx_body(abcx_path)
-
-        if not measures:
-            return False
-
-        # 从第一个小节提取 V: 指令并添加到 header
-        if measures:
-            cleaned_first, extracted_headers = extract_voice_and_marks(measures[0])
-            measures[0] = cleaned_first
-            # 将提取的 V: 指令添加到 header（在 K: 行之后）
-            if extracted_headers:
-                header.extend(extracted_headers)
-
-        # 创建 aligned ABCX
-        aligned_abcx = create_aligned_abcx(header, measures, phrase_size)
+        aligned_abcx = build_orphan_aligned_abcx(abcx_path, phrase_size)
 
         # 保存 aligned ABCX
         output_path = output_dir / abcx_path.name.replace('.abcx', '_aligned.abcx')
@@ -272,6 +261,8 @@ def process_orphan_abcx(abcx_path: Path, output_dir: Path,
 
         return True
 
+    except AlignedAbcxError:
+        return False
     except Exception as e:
         print(f"Error processing {abcx_path}: {e}")
         return False

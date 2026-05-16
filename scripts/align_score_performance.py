@@ -23,6 +23,8 @@ from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from aligned_abcx_format import AlignedAbcxError, build_aligned_abcx
+
 
 @dataclass
 class ScoreMeasure:
@@ -838,41 +840,29 @@ def write_aligned_abcx(
     output_abcx: Path,
     phrases: list[Phrase],
     measure_content: dict[int, str],
-) -> None:
+) -> bool:
     """Write expanded ABCX file with H/M markers based on MIDI measure structure.
 
     Unlike the compact ABCX (which has one entry per score measure),
     this expanded version has one entry per Score MIDI measure (including repeats).
     """
-    with open(original_abcx, encoding="utf-8") as f:
-        lines = [line.rstrip() for line in f]
+    phrase_groups = [
+        (phrase.phrase_id, phrase.measures, phrase.has_linebreak)
+        for phrase in phrases
+    ]
+    measures = sorted(measure_content.items())
 
-    # Find header end (after K: key signature)
-    header_end = None
-    for i, line in enumerate(lines):
-        if line.startswith("K:"):
-            header_end = i
-            break
+    try:
+        text = build_aligned_abcx(original_abcx, measures, phrase_groups)
+    except AlignedAbcxError:
+        if output_abcx.exists():
+            output_abcx.unlink()
+        return False
 
-    if header_end is None:
-        return
-
-    # Write output
+    output_abcx.parent.mkdir(parents=True, exist_ok=True)
     with open(output_abcx, "w", encoding="utf-8") as f:
-        # Write header
-        for i in range(header_end + 1):
-            f.write(lines[i] + "\n")
-
-        # Write body with H/M markers — one entry per MIDI measure
-        for phrase in phrases:
-            f.write(f"{phrase.phrase_id}\n")
-            for measure_num in phrase.measures:
-                content = measure_content.get(measure_num, "")
-                f.write(f"M{measure_num}\t{content}\n")
-            if phrase.has_linebreak:
-                f.write("$\n")
-
-        f.write("\n")
+        f.write(text)
+    return True
 
 
 # ABC pitch spelling helpers
@@ -1335,10 +1325,10 @@ def process_metadata_task(
                 "midi_measure_content": {str(k): v for k, v in sorted(score_structure.midi_measure_content.items())},
             }, f, indent=2, ensure_ascii=False)
 
-    # Write score_aligned.abcx (write once, skip if exists)
+    # Write score_aligned.abcx. Scores that cannot be projected to the two-staff
+    # aligned format are removed/skipped by write_aligned_abcx.
     aligned_abcx = output_piece_dir / f"score_aligned{suffix}.abcx"
-    if not aligned_abcx.exists():
-        write_aligned_abcx(abcx_path, aligned_abcx, score_structure.phrases, score_structure.midi_measure_content)
+    write_aligned_abcx(abcx_path, aligned_abcx, score_structure.phrases, score_structure.midi_measure_content)
 
     # Copy original score.abcx (write once)
     orig_abcx = output_piece_dir / "score.abcx"
@@ -1455,10 +1445,10 @@ def process_metadata_task_v2(
                 "midi_measure_content": {str(k): v for k, v in sorted(score_structure.midi_measure_content.items())},
             }, f, indent=2, ensure_ascii=False)
 
-    # Write score_aligned.abcx (write once, skip if exists)
+    # Write score_aligned.abcx. Scores that cannot be projected to the two-staff
+    # aligned format are removed/skipped by write_aligned_abcx.
     aligned_abcx = output_piece_dir / f"score_aligned{suffix}.abcx"
-    if not aligned_abcx.exists():
-        write_aligned_abcx(abcx_path, aligned_abcx, score_structure.phrases, score_structure.midi_measure_content)
+    write_aligned_abcx(abcx_path, aligned_abcx, score_structure.phrases, score_structure.midi_measure_content)
 
     # Copy original score.abcx (write once)
     orig_abcx = output_piece_dir / "score.abcx"

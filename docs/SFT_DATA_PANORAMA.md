@@ -66,7 +66,7 @@ Note pitch mask 规则: 将音符字母 `A-Ga-g` 替换为 `X`，保留节奏数
 
 | 数据 | 路径 | 数量 | 说明 |
 |------|------|------|------|
-| Aligned ABCX | `PianoCoRe/orphan_abcx/*_aligned.abcx` | **4,820** | 仅乐谱，无对应 MIDI 表演 |
+| Aligned ABCX | `PianoCoRe/orphan_abcx/*_aligned.abcx` | **4,746** | 仅乐谱，无对应 MIDI 表演；投影为两谱表格式 |
 
 **用途**: Score Language Learning 任务（续写 + mask 重建）
 
@@ -86,7 +86,7 @@ Note pitch mask 规则: 将音符字母 `A-Ga-g` 替换为 `X`，保留节奏数
 
 | 数据 | 路径 | 数量 | 说明 |
 |------|------|------|------|
-| Aligned ABCX | `PianoCoRe/aligned/**/*_aligned.abcx` | **1,584** | 乐谱（已对齐，tier A+） |
+| Aligned ABCX | `PianoCoRe/aligned/**/*_aligned.abcx` | **1,600** | 乐谱侧文件（已对齐，投影为两谱表格式；EPR 样本仍按 tier A+ TSV 过滤） |
 | MIDI-TSV | `PianoCoRe/aligned/**/*.tsv` | **155,956** | 表演（已对齐，tier A+ 且已有 TSV） |
 
 **用途**: EPR 任务 + Score/Performance Language Learning 任务
@@ -95,7 +95,7 @@ Note pitch mask 规则: 将音符字母 `A-Ga-g` 替换为 `X`，保留节奏数
 
 | 数据类型 | 数量 | 用途 |
 |----------|------|------|
-| Aligned ABCX (总) | 6,404 (4,820 + 1,584) | Score Language |
+| Aligned ABCX (总) | 6,346 (4,746 + 1,600) | Score Language |
 | MIDI-TSV (总) | 209,183 (53,227 + 155,956) | Performance Language |
 | 配对对 (ABCX+TSV) | 155,956 | EPR |
 
@@ -105,7 +105,7 @@ Note pitch mask 规则: 将音符字母 `A-Ga-g` 替换为 `X`，保留节奏数
 
 ### 3.1 Downloaded Scores → Unpaired ABCX
 
-四类公开乐谱数据集，共 4,820 个文件：
+四类公开乐谱数据集处理后共有 4,820 个 raw ABCX；按 aligned 格式的两谱表投影规则，当前保留 **4,746** 个 orphan aligned ABCX：
 
 | 数据集 | 原始格式 | 原始数量 | 处理后 ABCX | 转换方式 |
 |--------|----------|----------|-------------|----------|
@@ -126,7 +126,7 @@ PianoCoRe 原始数据包含 1,607 首曲目的 `.mxl` 乐谱和 244,157 个 MID
 
 **筛选流程**:
 1. Paired/EPR 过滤: `tier_a=True`（A+），当前已有 TSV 的 paired performance 为 **155,956** 个。
-2. Paired score 转换: `tier_a=True` 的 unique score 为 **1,584** 个 aligned ABCX。
+2. Paired score 转换: 两谱表投影 aligned ABCX 当前为 **1,600** 个。
 3. Unpaired Performance 过滤: `tier_b=True` 且 `tier_a=False`，当前已有 TSV 的 orphan performance 为 **53,227** 个。
 4. Performance Language 总 TSV: paired A+ **155,956** + unpaired B-only **53,227** = **209,183**。
 
@@ -177,22 +177,32 @@ ABCX 文件
     │
     ▼
 ┌─────────────────────┐
-│ parse_abcx_header() │  提取 X:/T:/C:/K:/M:/L:/Q:/%% 行
+│ parse_score_layout()│  读取 %%score；投影成两个输出谱表
+│                     │  - { 1 | 2 }
+│                     │  - { (1 2 5) | (3 4 6) }
+│                     │  - 1 2 简写映射为两个谱表
+│                     │  - 声乐+钢琴布局保留 braced piano group
+│                     │  - 多谱表布局按上下半区折叠
 └─────────────────────┘
     │
     ▼
 ┌─────────────────────┐
-│ parse_abcx_body()   │  按 | 分割小节，过滤 V: 行
+│ extract header      │  删除 %%score 和 V:，保留 X/T/C/L/Q/M/K/%%text 等
 └─────────────────────┘
     │
     ▼
 ┌─────────────────────┐
-│ create_aligned_abcx()│  每 4 小节为一组标记为 H1, H2, ...
-│                     │  每个小节前加 M1, M2, ... + TAB
+│ simplify measure    │  每小节按 raw voice slot 聚合为 StaffU ; StaffL
+│ content             │  - 同谱表多声部用 &
+│                     │  - 每个谱表尾部全休止声部删除
+│                     │  - 空谱表用 . 占位
+│                     │  - 每条 M 行恰好一个 ;
 └─────────────────────┘
     │
     ▼
-Aligned ABCX (PianoCoRe/orphan_abcx/)
+Aligned ABCX
+  - Orphan: PianoCoRe/orphan_abcx/
+  - Paired: PianoCoRe/aligned/**/score_aligned.abcx
 ```
 
 **Aligned ABCX 格式示例**:
@@ -203,13 +213,20 @@ C:Mozart
 K:C
 M:4/4
 H1
-M1	[CEG] [DFA] | [EGB] [FAc] |
-M2	[GBd] [Ace] | [Bdf] [ceg] |
+M1	[CEG] [DFA] & z4 E2 ; [C,,C,]4 [G,,G,]4
+M2	. ; [F,,F,]2 [C,F,A,]2
 M3	...
 M4	...
 H2
 M5	...
 ```
+
+当前实现入口：
+
+- `scripts/aligned_abcx_format.py`: 两谱表投影、measure 简化、休止声部裁剪的共享实现
+- `process_orphan_abcx.py`: 从 `data/score_processed/` 生成 orphan aligned ABCX
+- `scripts/align_score_performance.py`: score MIDI 对齐流程中的 aligned ABCX writer
+- `scripts/regenerate_score_files.py`: 只重生成 paired score 侧文件，不重做 performance TSV
 
 ### 4.3 Performance (MIDI-TSV) 生成 Pipeline
 
@@ -242,7 +259,7 @@ M5	...
 ### 5.1 Score Language 生成
 
 ```python
-for each aligned_abcx_file (6,404 total):
+for each aligned_abcx_file (6,346 total):
     score = AlignedABCXParser.parse(file)
     # score = {header, measures: {M1: "...", M2: "...", ...},
     #          phrases: {H1: [M1,M2,M3,M4], ...}}
