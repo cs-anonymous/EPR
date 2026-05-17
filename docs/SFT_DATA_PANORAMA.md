@@ -323,31 +323,163 @@ for each row in metadata.csv:
 
 | 任务 | 文件 | 样本数 | 大小 |
 |------|------|--------|------|
-| EPR | `measure_epr.jsonl` | 6,217,115 | 7.0 GB |
+| EPR | `measure_epr.jsonl` | 13,467,099 | 12 GB |
 | Perf Lang Continuation | `measure_perf_lang_continuation.jsonl` | 21,810,156 | 19 GB |
 | Perf Lang Mask | `measure_perf_lang_mask.jsonl` | 20,471,555 | 18 GB |
-| Score Lang Continuation | `measure_score_lang_continuation.jsonl` | 646,564 | 262 MB |
-| Score Lang Mask | `measure_score_lang_mask.jsonl` | 386,867 | 166 MB |
-| **Measure 合计** | | **49,532,257** | **44.4 GB** |
+| Score Lang Continuation | `measure_score_lang_continuation.jsonl` | 638,492 | 227 MB |
+| Score Lang Mask | `measure_score_lang_mask.jsonl` | 1,819,519 | 684 MB |
+| **Measure 合计** | | **58,206,821** | **约 49.9 GB** |
 
 ### Phrase-based
 
 | 任务 | 文件 | 样本数 | 大小 |
 |------|------|--------|------|
-| EPR | `phrase_epr.jsonl` | 2,261,655 | 7.0 GB |
-| Score Lang Continuation | `phrase_score_lang_continuation.jsonl` | 158,030 | 140 MB |
-| Score Lang Mask | `phrase_score_lang_mask.jsonl` | 113,985 | 104 MB |
-| **Phrase 合计** | | **2,533,670** | **7.2 GB** |
+| EPR | `phrase_epr.jsonl` | 3,581,265 | 9.3 GB |
+| Score Lang Continuation | `phrase_score_lang_continuation.jsonl` | 156,026 | 118 MB |
+| Score Lang Mask | `phrase_score_lang_mask.jsonl` | 525,786 | 410 MB |
+| **Phrase 合计** | | **4,263,077** | **约 9.8 GB** |
 
 ### 总计
 
 | 类别 | 样本数 |
 |------|--------|
-| EPR | 8,478,770 |
+| EPR | 17,048,364 |
 | Performance Language | 42,281,711 |
-| Score Language | 1,305,446 |
-| **原始 JSONL 总计** | **52,065,927** |
+| Score Language | 3,139,823 |
+| **原始 JSONL 总计** | **62,469,898** |
 | Swift messages train/val | 43,587,157 |
+
+### CoRe-S / CoRe-S* 生成子集
+
+统计日期: 2026-05-17。
+
+口径:
+
+- CoRe-S = A* (`tier_a_star=True`, `refined_recall >= 0.90`, `interpolation_ratio <= 0.10`) + ASAP。
+- CoRe-S* = A* (`tier_a_star=True`, `refined_recall >= 0.95`, `interpolation_ratio <= 0.05`) + ASAP。
+- ASAP 使用 `is_transcription=False` 定义并全部保留。
+- `interpolation_ratio = refined_performance_interpolated_note_count / refined_performance_note_count`。
+- 不使用 `raw_recall`。
+- EPR 与 performance language 使用上述子集；score language 文件保持不变。
+- 测试集尚未从这些原始 SFT 数据中拆分。
+
+PianoCoRe metadata 原始记录数:
+
+| 子集 | metadata 行数 | 唯一 performance_id | 唯一曲目 |
+|------|--------------:|--------------------:|---------:|
+| ASAP (`is_transcription=False`) | 1,066 | 921 | 198 |
+| CoRe-S A* 分支 | 110,106 | 109,997 | 1,159 |
+| CoRe-S union | 110,361 | 110,216 | 1,163 |
+| CoRe-S* A* 分支 | 63,088 | 63,002 | 1,060 |
+| CoRe-S* union | 63,598 | 63,453 | 1,074 |
+
+生成目录:
+
+- CoRe-S: `sft_data/core-s/`，目录大小约 33 GB。
+- CoRe-S*: `sft_data/core-s-star/`，目录大小约 18 GB。
+
+| 子集 | EPR | Performance Language | Score Language | JSONL 总样本数 |
+|------|----:|---------------------:|---------------:|---------------:|
+| CoRe-S | 12,010,291 | 26,410,084 | 3,139,823 | 41,560,198 |
+| CoRe-S* | 6,870,231 | 12,903,097 | 3,139,823 | 22,913,151 |
+
+逐文件样本数:
+
+| 子集 | 文件 | 样本数 |
+|------|------|-------:|
+| CoRe-S | `measure_epr.jsonl` | 9,502,069 |
+| CoRe-S | `phrase_epr.jsonl` | 2,508,222 |
+| CoRe-S | `measure_perf_lang_continuation.jsonl` | 13,613,781 |
+| CoRe-S | `measure_perf_lang_mask.jsonl` | 12,796,303 |
+| CoRe-S | `measure_score_lang_continuation.jsonl` | 638,492 |
+| CoRe-S | `measure_score_lang_mask.jsonl` | 1,819,519 |
+| CoRe-S | `phrase_score_lang_continuation.jsonl` | 156,026 |
+| CoRe-S | `phrase_score_lang_mask.jsonl` | 525,786 |
+| CoRe-S* | `measure_epr.jsonl` | 5,422,383 |
+| CoRe-S* | `phrase_epr.jsonl` | 1,447,848 |
+| CoRe-S* | `measure_perf_lang_continuation.jsonl` | 6,683,068 |
+| CoRe-S* | `measure_perf_lang_mask.jsonl` | 6,220,029 |
+| CoRe-S* | `measure_score_lang_continuation.jsonl` | 638,492 |
+| CoRe-S* | `measure_score_lang_mask.jsonl` | 1,819,519 |
+| CoRe-S* | `phrase_score_lang_continuation.jsonl` | 156,026 |
+| CoRe-S* | `phrase_score_lang_mask.jsonl` | 525,786 |
+
+### `is_transcription=False` 子集回连统计
+
+统计日期: 2026-05-17。
+
+口径:
+
+- `is_transcription` 来自 `PianoCoRe/metadata.csv`。
+- EPR 样本的 `piece_id` 直接对应 `performance_id`。
+- Performance Language 样本的 `piece_id` 是 aligned TSV 相对路径，统计时取文件名并去掉 `_refined.mid` / `.mid` / `.tsv` 后缀回连 `performance_id`。
+- `epr_a_star` 是 A* 单独子集文件；如果训练时不同时使用默认 EPR 和 A* EPR，不应把二者简单相加。
+
+metadata 中 `is_transcription=False` 共 **1,066 行 / 921 个唯一 performance_id**。
+
+| 任务文件 | 总样本数 | `is_transcription=False` 样本数 |
+|----------|----------:|-------------------------------:|
+| `measure_perf_lang_continuation.jsonl` | 21,810,156 | 172,147 |
+| `measure_perf_lang_mask.jsonl` | 20,471,555 | 164,458 |
+| **Performance Language 合计** | **42,281,711** | **336,605** |
+| `measure_epr.jsonl` | 13,467,099 | 116,064 |
+| `phrase_epr.jsonl` | 3,581,265 | 30,415 |
+| **EPR 默认集合合计** | **17,048,364** | **146,479** |
+| `measure_epr_a_star.jsonl` | 11,230,197 | 100,650 |
+| `phrase_epr_a_star.jsonl` | 2,956,753 | 25,608 |
+| **EPR A* 合计** | **14,186,950** | **126,258** |
+| **上述文件总计** | **73,517,025** | **609,342** |
+
+### A / A* 质量与长度分布
+
+统计日期: 2026-05-17。
+
+质量字段口径:
+
+- A 记录: `tier_a=True`，共 **157,207 行 / 157,081 个唯一 performance_id**。
+- A* 记录: `tier_a_star=True`，共 **130,275 行 / 130,159 个唯一 performance_id**。
+- Alignment recall 使用 `refined_recall`。
+- Interpolation ratio 使用 `refined_performance_interpolated_note_count / refined_performance_note_count`。在当前 metadata 中它基本等价于 `1 - refined_recall`，因此 A* 的上界为 0.15。
+
+#### Alignment recall 分布
+
+| 子集 | mean | std | min | p01 | p05 | p10 | p25 | p50 | p75 | p90 | p95 | p99 | max |
+|------|-----:|----:|----:|----:|----:|----:|----:|----:|----:|----:|----:|----:|----:|
+| A | 0.9243 | 0.0599 | 0.7000 | 0.7330 | 0.7974 | 0.8376 | 0.8965 | 0.9402 | 0.9687 | 0.9851 | 0.9917 | 0.9984 | 1.0000 |
+| A* | 0.9423 | 0.0369 | 0.8500 | 0.8549 | 0.8711 | 0.8869 | 0.9172 | 0.9483 | 0.9719 | 0.9866 | 0.9927 | 0.9988 | 1.0000 |
+
+#### Interpolation ratio 分布
+
+| 子集 | mean | std | min | p01 | p05 | p10 | p25 | p50 | p75 | p90 | p95 | p99 | max |
+|------|-----:|----:|----:|----:|----:|----:|----:|----:|----:|----:|----:|----:|----:|
+| A | 0.0757 | 0.0599 | 0.0000 | 0.0016 | 0.0083 | 0.0149 | 0.0313 | 0.0598 | 0.1035 | 0.1624 | 0.2026 | 0.2670 | 0.3000 |
+| A* | 0.0577 | 0.0369 | 0.0000 | 0.0012 | 0.0073 | 0.0134 | 0.0281 | 0.0517 | 0.0828 | 0.1131 | 0.1289 | 0.1451 | 0.1500 |
+
+补充阈值视角:
+
+| 子集 | `refined_recall >= 0.90` | `refined_recall >= 0.95` | `interpolation_ratio <= 0.05` | `interpolation_ratio <= 0.10` |
+|------|-------------------------:|-------------------------:|--------------------------------:|--------------------------------:|
+| A | 115,728 (73.62%) | 66,351 (42.21%) | 66,290 (42.17%) | 115,714 (73.61%) |
+| A* | 110,120 (84.53%) | 63,149 (48.47%) | 63,088 (48.43%) | 110,106 (84.52%) |
+
+#### EPR token length 分布
+
+Token length 使用本地 `Qwen3.5-4B/tokenizer.json` 统计。EPR 当前没有单独 swift 转换脚本，因此采用以下可复现训练文本口径:
+
+```
+system: You are a music score and performance language model.
+user:   instruction + score_header + score_snip
+assistant: perf_target
+```
+
+由于 EPR JSONL 总量约 38 GB，全量 tokenization 成本较高；下表使用每个文件约 100k 条等距抽样样本估计 token length 分布。`source_total` 为原文件全量样本数，`sample_count` 为参与 tokenization 的样本数。
+
+| 文件 | source_total | sample_count | mean | min | p01 | p05 | p10 | p25 | p50 | p75 | p90 | p95 | p99 | max | `<=2k` | `<=4k` |
+|------|-------------:|-------------:|-----:|----:|----:|----:|----:|----:|----:|----:|----:|----:|----:|----:|-------:|-------:|
+| `measure_epr.jsonl` | 13,467,099 | 100,501 | 507.08 | 119 | 207 | 257 | 289 | 347 | 456 | 604 | 791 | 947 | 1,276 | 3,448 | 99.94% | 100.00% |
+| `phrase_epr.jsonl` | 3,581,265 | 102,322 | 1,852.43 | 334 | 712 | 883 | 999 | 1,226 | 1,647 | 2,219 | 2,957 | 3,608 | 4,802 | 10,281 | 69.11% | 97.30% |
+| `measure_epr_a_star.jsonl` | 11,230,197 | 100,270 | 499.20 | 118 | 206 | 256 | 287 | 344 | 454 | 596 | 765 | 918 | 1,210 | 3,308 | 99.98% | 100.00% |
+| `phrase_epr_a_star.jsonl` | 2,956,753 | 101,957 | 1,817.26 | 310 | 698 | 880 | 988 | 1,214 | 1,645 | 2,194 | 2,855 | 3,443 | 4,646 | 11,814 | 69.90% | 98.10% |
 
 ---
 

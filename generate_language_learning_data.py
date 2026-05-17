@@ -34,14 +34,36 @@ from tqdm import tqdm
 random.seed(42)
 
 
-def load_valid_ids_and_abcx_paths(metadata_path: str = 'PianoCoRe/metadata.csv'):
+def _csv_bool(value) -> bool:
+    return str(value).strip().lower() == 'true'
+
+
+def _csv_float(value, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def load_valid_ids_and_abcx_paths(metadata_path: str = 'PianoCoRe/metadata.csv',
+                                   perf_tier: str = 'b',
+                                   perf_filter: str = None):
     """Load valid performance_ids and abcx-score-to-valid mapping from metadata.csv.
 
-    Performance language keeps tier B and above. Paired score language keeps
-    tier A and above, while orphan score files are handled separately.
+    Args:
+        perf_tier: 'a' for tier A only, 'b' for tier B+ (default).
+        perf_filter: optional named filter. Currently supports:
+            'core-s' =
+                is_transcription=False OR
+                (tier_a_star AND refined_recall >= 0.90
+                 AND interpolation_ratio <= 0.10).
+            'core-s-star' =
+                is_transcription=False OR
+                (tier_a_star AND refined_recall >= 0.95
+                 AND interpolation_ratio <= 0.05).
 
     Returns:
-        valid_perf_ids: tier B+ performance_ids
+        valid_perf_ids: filtered performance_ids
         valid_abcx_dirs: tier A+ score path tuples relative to `PianoCoRe/score`
     """
     valid_perf_ids = set()
@@ -50,14 +72,45 @@ def load_valid_ids_and_abcx_paths(metadata_path: str = 'PianoCoRe/metadata.csv')
         print(f"  Warning: {metadata_path} not found, no filtering applied")
         return valid_perf_ids, valid_abcx_dirs
 
-    count = 0
+    matched_rows = 0
     with open(metadata_path, 'r') as f:
         for row in csv.DictReader(f):
-            tier_a = row['tier_a'] == 'True'
-            tier_b = row['tier_b'] == 'True'
-            is_dup = row['is_duplicate'] == 'True'
+            tier_a = _csv_bool(row['tier_a'])
+            tier_b = _csv_bool(row['tier_b'])
+            tier_a_star = _csv_bool(row.get('tier_a_star', 'False'))
+            is_dup = _csv_bool(row['is_duplicate'])
+            is_transcription = _csv_bool(row.get('is_transcription', 'False'))
+            refined_recall = _csv_float(row.get('refined_recall'))
+            refined_note_count = _csv_float(row.get('refined_performance_note_count'))
+            interpolated_note_count = _csv_float(row.get('refined_performance_interpolated_note_count'))
+            interpolation_ratio = (
+                interpolated_note_count / refined_note_count
+                if refined_note_count > 0 else float('inf')
+            )
 
-            if tier_b and not is_dup:
+            if perf_filter == 'core-s':
+                core_astar_ok = (
+                    tier_a_star
+                    and refined_recall >= 0.90
+                    and interpolation_ratio <= 0.10
+                )
+                asap_ok = not is_transcription
+                perf_ok = core_astar_ok or asap_ok
+            elif perf_filter == 'core-s-star':
+                core_astar_ok = (
+                    tier_a_star
+                    and refined_recall >= 0.95
+                    and interpolation_ratio <= 0.05
+                )
+                asap_ok = not is_transcription
+                perf_ok = core_astar_ok or asap_ok
+            elif perf_tier == 'a':
+                perf_ok = tier_a and not is_dup
+            else:
+                perf_ok = tier_b and not is_dup
+
+            if perf_ok:
+                matched_rows += 1
                 perf_id = row.get('performance_id', '').strip()
                 if perf_id:
                     valid_perf_ids.add(perf_id)
@@ -75,10 +128,8 @@ def load_valid_ids_and_abcx_paths(metadata_path: str = 'PianoCoRe/metadata.csv')
                             if rel_parts:
                                 valid_abcx_dirs.add(rel_parts)
                             break
-            if (tier_b or tier_a) and not is_dup:
-                count += 1
-
-    print(f"  Loaded {len(valid_perf_ids):,} tier B+ performance_ids from {count} metadata rows")
+    tier_label = perf_filter if perf_filter else ('A' if perf_tier == 'a' else 'B+')
+    print(f"  Loaded {len(valid_perf_ids):,} tier {tier_label} performance_ids from {matched_rows:,} metadata rows")
     print(f"  Loaded {len(valid_abcx_dirs):,} tier A+ paired score directories")
     return valid_perf_ids, valid_abcx_dirs
 
@@ -206,6 +257,40 @@ class TSVParser:
             'phrases': phrases,
             'phrase_durations': phrase_durations
         }
+
+
+def compact_perf_event(line: str) -> str:
+    """Serialize one event as pitch:duration:timing:velocity or P:timing:value."""
+    parts = line.replace('\t', ' ').split()
+    if not parts:
+        return ''
+    if parts[0] == 'P':
+        if len(parts) >= 3:
+            return f"P:{parts[1]}:{parts[2]}"
+        return ':'.join(parts)
+    if len(parts) == 1 and parts[0].count(':') >= 3:
+        return parts[0]
+    if len(parts) >= 3 and ':' in parts[0]:
+        return f"{parts[0]}:{parts[1]}:{parts[2]}"
+    return ':'.join(parts)
+
+
+def format_perf_measure(measure_id: str, duration: str, event_lines: List[str]) -> str:
+    events = [compact_perf_event(line) for line in event_lines]
+    events = [event for event in events if event]
+    return ' '.join([f"{measure_id}:{duration}"] + events)
+
+
+def format_perf_phrase(phrase_id: str, duration: str, measure_parts: List[str]) -> str:
+    return '\n'.join([f"{phrase_id}:{duration}"] + [part for part in measure_parts if part])
+
+
+def format_score_measure(measure_id: str, content: str) -> str:
+    return f"{measure_id} {content}"
+
+
+def format_score_phrase(phrase_id: str, measure_lines: List[str]) -> str:
+    return '\n'.join([phrase_id] + [line for line in measure_lines if line])
 
 
 # ========== Score Mask Functions ==========
@@ -555,9 +640,9 @@ class MeasureScoreLangGenerator:
                     curr_m_id = measure_ids[i]
                     target_m_id = measure_ids[i + 1]
 
-                    # 格式: MX\t<content>
-                    input_text = f"{curr_m_id}\t{score_data['measures'][curr_m_id]}"
-                    target_text = f"{target_m_id}\t{score_data['measures'][target_m_id]}"
+                    # 格式: MX <content>
+                    input_text = format_score_measure(curr_m_id, score_data['measures'][curr_m_id])
+                    target_text = format_score_measure(target_m_id, score_data['measures'][target_m_id])
 
                     continuation_samples.append({
                         'task': 'measure_score_lang_continuation',
@@ -569,29 +654,46 @@ class MeasureScoreLangGenerator:
                     cont_count += 1
 
                 # Mask reconstruction: σ_head + f(σ_{M_k}) → σ_{M_k}
+                # For each measure, always generate treble + bass masks.
+                # Additionally try acc and label masks (skip if no change).
                 if half_limit is None or mask_count < half_limit:
                     curr_m_id = measure_ids[i]
                     curr_content = score_data['measures'][curr_m_id]
-                    mask_name = random.choice(list(SCORE_MASKS.keys()))
-                    mask_fn = SCORE_MASKS[mask_name]
-                    if mask_name in ('treble', 'bass'):
-                        masked_content = mask_fn(curr_content, score_data['header'])
-                    else:
-                        masked_content = mask_fn(curr_content)
-                    if masked_content != curr_content:
-                        # 格式: MX\t<content>
-                        input_text = f"{curr_m_id}\t{masked_content}"
-                        target_text = f"{curr_m_id}\t{curr_content}"
 
-                        mask_samples.append({
-                            'task': 'measure_score_lang_mask',
-                            'mask_type': mask_name,
-                            'header': score_data['header'],
-                            'input': input_text,
-                            'target': target_text,
-                            'piece_id': piece_id
-                        })
-                        mask_count += 1
+                    # Staff-level masks: always generate (every piece has treble+bass)
+                    for m_name in ('treble', 'bass'):
+                        m_fn = SCORE_MASKS[m_name]
+                        masked = m_fn(curr_content, score_data['header'])
+                        if masked != curr_content:
+                            input_text = format_score_measure(curr_m_id, masked)
+                            target_text = format_score_measure(curr_m_id, curr_content)
+                            mask_samples.append({
+                                'task': 'measure_score_lang_mask',
+                                'mask_type': m_name,
+                                'header': score_data['header'],
+                                'input': input_text,
+                                'target': target_text,
+                                'piece_id': piece_id
+                            })
+                            mask_count += 1
+
+                    # Optional masks: only if they actually change content
+                    for m_name in ('acc', 'label'):
+                        m_fn = SCORE_MASKS[m_name]
+                        masked = m_fn(curr_content)
+                        if masked != curr_content:
+                            if half_limit is None or mask_count < half_limit:
+                                input_text = format_score_measure(curr_m_id, masked)
+                                target_text = format_score_measure(curr_m_id, curr_content)
+                                mask_samples.append({
+                                    'task': 'measure_score_lang_mask',
+                                    'mask_type': m_name,
+                                    'header': score_data['header'],
+                                    'input': input_text,
+                                    'target': target_text,
+                                    'piece_id': piece_id
+                                })
+                                mask_count += 1
 
         self._save_samples(continuation_samples, 'measure_score_lang_continuation')
         self._save_samples(mask_samples, 'measure_score_lang_mask')
@@ -678,17 +780,17 @@ class PhraseScoreLangGenerator:
                     curr_content = []
                     for m_id in score_data['phrases'][curr_p_id]:
                         if m_id in score_data['measures']:
-                            curr_content.append(f"{m_id}\t{score_data['measures'][m_id]}")
+                            curr_content.append(format_score_measure(m_id, score_data['measures'][m_id]))
 
                     target_content = []
                     for m_id in score_data['phrases'][target_p_id]:
                         if m_id in score_data['measures']:
-                            target_content.append(f"{m_id}\t{score_data['measures'][m_id]}")
+                            target_content.append(format_score_measure(m_id, score_data['measures'][m_id]))
 
                     if curr_content and target_content:
-                        # 格式: HX\nMX\t...\nMX\t...
-                        input_text = f"{curr_p_id}\n" + '\n'.join(curr_content)
-                        target_text = f"{target_p_id}\n" + '\n'.join(target_content)
+                        # 格式: HX\nMX ...
+                        input_text = format_score_phrase(curr_p_id, curr_content)
+                        target_text = format_score_phrase(target_p_id, target_content)
 
                         continuation_samples.append({
                             'task': 'phrase_score_lang_continuation',
@@ -700,35 +802,33 @@ class PhraseScoreLangGenerator:
                         cont_count += 1
 
                 # Mask reconstruction: σ_head + f(σ_{H_k}) → σ_{H_k}
-                if half_limit is None or mask_count < half_limit:
-                    curr_p_id = phrase_ids[i]
-                    curr_content = []
-                    for m_id in score_data['phrases'][curr_p_id]:
-                        if m_id in score_data['measures']:
-                            curr_content.append(f"{m_id}\t{score_data['measures'][m_id]}")
+                # Try all mask types for each phrase, keep those where masked != original.
+                curr_p_id = phrase_ids[i]
+                curr_content = []
+                for m_id in score_data['phrases'][curr_p_id]:
+                    if m_id in score_data['measures']:
+                        curr_content.append(format_score_measure(m_id, score_data['measures'][m_id]))
 
-                    if curr_content:
-                        full_content_body = '\n'.join(curr_content)
-                        mask_name = random.choice(list(SCORE_MASKS.keys()))
-                        mask_fn = SCORE_MASKS[mask_name]
-                        if mask_name in ('treble', 'bass'):
-                            masked_content_body = mask_fn(full_content_body, score_data['header'])
+                if curr_content:
+                    full_content_body = '\n'.join(curr_content)
+                    for m_name, m_fn in SCORE_MASKS.items():
+                        if m_name in ('treble', 'bass'):
+                            masked = m_fn(full_content_body, score_data['header'])
                         else:
-                            masked_content_body = mask_fn(full_content_body)
-                        if masked_content_body != full_content_body:
-                            # 格式: HX\nMX\t...\nMX\t...
-                            input_text = f"{curr_p_id}\n" + masked_content_body
-                            target_text = f"{curr_p_id}\n" + full_content_body
-
-                            mask_samples.append({
-                                'task': 'phrase_score_lang_mask',
-                                'mask_type': mask_name,
-                                'header': score_data['header'],
-                                'input': input_text,
-                                'target': target_text,
-                                'piece_id': piece_id
-                            })
-                            mask_count += 1
+                            masked = m_fn(full_content_body)
+                        if masked != full_content_body:
+                            if half_limit is None or mask_count < half_limit:
+                                input_text = f"{curr_p_id}\n" + masked
+                                target_text = f"{curr_p_id}\n" + full_content_body
+                                mask_samples.append({
+                                    'task': 'phrase_score_lang_mask',
+                                    'mask_type': m_name,
+                                    'header': score_data['header'],
+                                    'input': input_text,
+                                    'target': target_text,
+                                    'piece_id': piece_id
+                                })
+                                mask_count += 1
 
         self._save_samples(continuation_samples, 'phrase_score_lang_continuation')
         self._save_samples(mask_samples, 'phrase_score_lang_mask')
@@ -751,11 +851,13 @@ class MeasurePerfLangGenerator:
 
     def __init__(self, tsv_files: List[Path], output_dir: str,
                  max_samples_per_piece: int = None,
-                 valid_perf_ids: Set[str] = None):
+                 valid_perf_ids: Set[str] = None,
+                 file_suffix: str = ''):
         self.tsv_files = tsv_files
         self.output_dir = Path(output_dir)
         self.max_samples_per_piece = max_samples_per_piece
         self.valid_perf_ids = valid_perf_ids or set()
+        self.file_suffix = file_suffix
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def _is_valid(self, tsv_path: Path) -> bool:
@@ -804,12 +906,13 @@ class MeasurePerfLangGenerator:
                     curr_duration = perf_data['measure_durations'].get(curr_m_id, '')
                     target_duration = perf_data['measure_durations'].get(target_m_id, '')
 
-                    curr_events = '\n'.join(perf_data['measures'][curr_m_id])
-                    target_events = '\n'.join(perf_data['measures'][target_m_id])
-
-                    # 格式: MX:<duration>\n<events>
-                    input_text = f"{curr_m_id}:{curr_duration}\n{curr_events}"
-                    target_text = f"{target_m_id}:{target_duration}\n{target_events}"
+                    # Compact format: MX:<duration> <pitch>:<duration>:<timing>:<velocity> ...
+                    input_text = format_perf_measure(
+                        curr_m_id, curr_duration, perf_data['measures'][curr_m_id]
+                    )
+                    target_text = format_perf_measure(
+                        target_m_id, target_duration, perf_data['measures'][target_m_id]
+                    )
 
                     continuation_samples.append({
                         'task': 'measure_perf_lang_continuation',
@@ -827,15 +930,12 @@ class MeasurePerfLangGenerator:
                     mask_name = random.choice(list(PERF_MASKS.keys()))
                     masked_lines = PERF_MASKS[mask_name](curr_lines)
 
-                    masked_events = '\n'.join(masked_lines)
-                    full_events = '\n'.join(curr_lines)
-
                     # For duration mask, also mask the measure duration
                     mask_curr_duration = 'X' if mask_name == 'duration' else curr_duration
 
-                    # 格式: MX:<duration>\n<events>
-                    input_text = f"{curr_m_id}:{mask_curr_duration}\n{masked_events}"
-                    target_text = f"{curr_m_id}:{curr_duration}\n{full_events}"
+                    # Compact format: MX:<duration> <pitch>:<duration>:<timing>:<velocity> ...
+                    input_text = format_perf_measure(curr_m_id, mask_curr_duration, masked_lines)
+                    target_text = format_perf_measure(curr_m_id, curr_duration, curr_lines)
 
                     if input_text != target_text:
                         mask_samples.append({
@@ -847,13 +947,16 @@ class MeasurePerfLangGenerator:
                         })
                         mask_count += 1
 
-        self._save_samples(continuation_samples, 'measure_perf_lang_continuation')
-        self._save_samples(mask_samples, 'measure_perf_lang_mask')
+        cont_suffix = self.file_suffix
+        mask_suffix = self.file_suffix
+        self._save_samples(continuation_samples, 'measure_perf_lang_continuation', cont_suffix)
+        self._save_samples(mask_samples, 'measure_perf_lang_mask', mask_suffix)
         return len(continuation_samples), len(mask_samples)
 
-    def _save_samples(self, samples: List[Dict], prefix: str):
+    def _save_samples(self, samples: List[Dict], prefix: str, suffix: str = ''):
         """保存样本到 measure-based 文件夹"""
-        output_file = self.output_dir / 'measure-based' / f'{prefix}.jsonl'
+        fname = f'{prefix}{suffix}.jsonl' if suffix else f'{prefix}.jsonl'
+        output_file = self.output_dir / 'measure-based' / fname
         output_file.parent.mkdir(parents=True, exist_ok=True)
         with open(output_file, 'w', encoding='utf-8') as f:
             for sample in samples:
@@ -919,20 +1022,21 @@ class PhrasePerfLangGenerator:
                     for m_id in perf_data['phrases'][curr_p_id]:
                         if m_id in perf_data['measures'] and m_id in perf_data['measure_durations']:
                             duration = perf_data['measure_durations'][m_id]
-                            events = '\n'.join(perf_data['measures'][m_id])
-                            curr_content.append(f"{m_id}:{duration}\n{events}")
+                            curr_content.append(
+                                format_perf_measure(m_id, duration, perf_data['measures'][m_id])
+                            )
 
                     target_content = []
                     for m_id in perf_data['phrases'][target_p_id]:
                         if m_id in perf_data['measures'] and m_id in perf_data['measure_durations']:
                             duration = perf_data['measure_durations'][m_id]
-                            events = '\n'.join(perf_data['measures'][m_id])
-                            target_content.append(f"{m_id}:{duration}\n{events}")
+                            target_content.append(
+                                format_perf_measure(m_id, duration, perf_data['measures'][m_id])
+                            )
 
                     if curr_content and target_content:
-                        # 格式: HX:<duration>\nMX:<duration>\n<events>\nMX:<duration>\n<events>
-                        input_text = f"{curr_p_id}:{curr_p_duration}\n" + '\n'.join(curr_content)
-                        target_text = f"{target_p_id}:{target_p_duration}\n" + '\n'.join(target_content)
+                        input_text = format_perf_phrase(curr_p_id, curr_p_duration, curr_content)
+                        target_text = format_perf_phrase(target_p_id, target_p_duration, target_content)
 
                         continuation_samples.append({
                             'task': 'phrase_perf_lang_continuation',
@@ -966,7 +1070,7 @@ class PhrasePerfLangGenerator:
                         line_idx = 0
                         for m_id, duration, num_lines in measure_info:
                             measure_lines = all_lines[line_idx:line_idx + num_lines]
-                            full_content_parts.append(f"{m_id}:{duration}\n" + '\n'.join(measure_lines))
+                            full_content_parts.append(format_perf_measure(m_id, duration, measure_lines))
                             line_idx += num_lines
                         full_content_body = '\n'.join(full_content_parts)
 
@@ -975,13 +1079,12 @@ class PhrasePerfLangGenerator:
                         line_idx = 0
                         for m_id, duration, num_lines in measure_info:
                             measure_masked_lines = masked_lines[line_idx:line_idx + num_lines]
-                            masked_content_parts.append(f"{m_id}:{duration}\n" + '\n'.join(measure_masked_lines))
+                            masked_content_parts.append(format_perf_measure(m_id, duration, measure_masked_lines))
                             line_idx += num_lines
                         masked_content_body = '\n'.join(masked_content_parts)
 
-                        # 格式: HX:<duration>\nMX:<duration>\n<events>\nMX:<duration>\n<events>
-                        input_text = f"{curr_p_id}:{curr_p_duration}\n" + masked_content_body
-                        target_text = f"{curr_p_id}:{curr_p_duration}\n" + full_content_body
+                        input_text = format_perf_phrase(curr_p_id, curr_p_duration, [masked_content_body])
+                        target_text = format_perf_phrase(curr_p_id, curr_p_duration, [full_content_body])
 
                         if input_text != target_text:
                             mask_samples.append({
@@ -1032,6 +1135,10 @@ def main():
                         help='Max samples per piece for Performance tasks (None = unlimited)')
     parser.add_argument('--max_tsv_files', type=int, default=None,
                         help='Max TSV files to process (for perf tasks, None = all)')
+    parser.add_argument('--perf-tier', type=str, choices=['a', 'b'], default='b',
+                        help='Tier filter for performance data. "a" = tier A only, "b" = tier B+ (default)')
+    parser.add_argument('--perf-filter', type=str, choices=['core-s', 'core-s-star'], default=None,
+                        help='Named performance filter. core-s/core-s-star = clean CoRe-A* plus all is_transcription=False')
 
     args = parser.parse_args()
     aligned_dir = Path(args.aligned_dir)
@@ -1078,7 +1185,10 @@ def main():
     valid_abcx_dirs = set()
     if not args.no_filter:
         print("\nLoading valid IDs from metadata.csv...")
-        valid_perf_ids, valid_abcx_dirs = load_valid_ids_and_abcx_paths()
+        valid_perf_ids, valid_abcx_dirs = load_valid_ids_and_abcx_paths(
+            perf_tier=args.perf_tier,
+            perf_filter=args.perf_filter,
+        )
 
     if args.task in ['measure_score', 'all']:
         print("\n[1/4] Generating Measure-level Score Language Learning data...")
@@ -1103,11 +1213,18 @@ def main():
         print(f"✓ Generated {cont_count} continuation + {mask_count} mask samples")
 
     if args.task in ['measure_perf', 'all']:
-        print("\n[3/4] Generating Measure-level Performance Language Learning data...")
+        suffix = ''
+        if args.perf_filter:
+            tier_label = args.perf_filter
+        else:
+            suffix = '_a' if args.perf_tier == 'a' else ''
+            tier_label = 'A' if args.perf_tier == 'a' else 'B+'
+        print(f"\n[3/4] Generating Measure-level Performance Language Learning data (tier {tier_label})...")
         generator = MeasurePerfLangGenerator(
             tsv_files, str(output_dir),
             max_samples_per_piece=args.max_perf_per_piece,
             valid_perf_ids=valid_perf_ids,
+            file_suffix=suffix,
         )
         cont_count, mask_count = generator.generate()
         print(f"✓ Generated {cont_count} continuation + {mask_count} mask samples")

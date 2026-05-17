@@ -167,7 +167,7 @@ Base LLM → Language Learning SFT → EPR SFT → spire-sft-epr
 
 | 任务 | 公式 | 优先级 | 说明 |
 |---|---|---|---|
-| **Measure EPR（主任务）** | $\sigma_{\text{head}} + \sigma_{M_{k-1}} + \sigma_{M_k} + \sigma_{M_{k+1}} \rightarrow \phi_{M_k}$ | **最高** | 3-measure context window，输出中间小节 |
+| **Measure EPR（主任务）** | $\sigma_{\text{head}} + \sigma_{M_{k-1}} + \sigma_{M_k} + \sigma_{M_{k+1}} + \phi_{M_{k-1}} \rightarrow \phi_{M_k}$ | **最高** | 3-measure score context window + previous performance，输出中间小节 |
 | Cold-start EPR | $\sigma_{\text{head}} + \sigma_{M_1} + \sigma_{M_2} \rightarrow \phi_{M_1}$ | 高 | 曲子开头渲染（无前文） |
 | EPR attribute generation | $\sigma_{\text{head}} + \sigma_{M_k} + g(\phi_{M_k}) \rightarrow \phi_{M_k}$ | 中 | 用 $g$ mask 生成 timing / velocity / duration / pedal 等演奏属性 |
 
@@ -175,7 +175,7 @@ Base LLM → Language Learning SFT → EPR SFT → spire-sft-epr
 
 | 任务 | 公式 | 优先级 | 说明 |
 |---|---|---|---|
-| **Phrase EPR（主任务）** | $\sigma_{\text{head}} + \sigma_{H_{k-1}} + \sigma_{H_k} + \sigma_{H_{k+1}} \rightarrow \phi_{H_k}$ | **最高** | 3-phrase context window，输出中间乐句 |
+| **Phrase EPR（主任务）** | $\sigma_{\text{head}} + \sigma_{H_{k-1}} + \sigma_{H_k} + \sigma_{H_{k+1}} + \phi_{H_{k-1}} \rightarrow \phi_{H_k}$ | **最高** | 3-phrase score context window + previous performance，输出中间乐句 |
 | Cold-start EPR | $\sigma_{\text{head}} + \sigma_{H_1} + \sigma_{H_2} \rightarrow \phi_{H_1}$ | 高 | 曲子开头渲染（无前文） |
 | Intra-phrase EPR | $\sigma_{\text{head}} + \sigma_{H_k} + \text{partial } \phi_{H_k} \rightarrow \text{remaining } \phi_{H_k}$ | 中 | 长乐句内部续写（仅 Phrase-level 需要） |
 | EPR attribute generation | $\sigma_{\text{head}} + \sigma_{H_k} + g(\phi_{H_k}) \rightarrow \phi_{H_k}$ | 中 | 用 $g$ mask 生成演奏属性 |
@@ -515,7 +515,7 @@ Phrase_Lang = {
 ```python
 Measure_EPR = {
     "measure_epr_main": {
-        "input": "σ_head + σ_{M_{k-1}} + σ_{M_k} + σ_{M_{k+1}}",
+        "input": "σ_head + σ_{M_{k-1}} + σ_{M_k} + σ_{M_{k+1}} + φ_{M_{k-1}}",
         "output": "φ_{M_k}",
         "weight": 0.8,
     },
@@ -532,7 +532,7 @@ Measure_EPR = {
 ```python
 Phrase_EPR = {
     "phrase_epr_main": {
-        "input": "σ_head + σ_{H_{k-1}} + σ_{H_k} + σ_{H_{k+1}}",
+        "input": "σ_head + σ_{H_{k-1}} + σ_{H_k} + σ_{H_{k+1}} + φ_{H_{k-1}}",
         "output": "φ_{H_k}",
         "weight": 0.8,
     },

@@ -1,4 +1,5 @@
 data
+abc
 abcx
 BaiduPCS*
 piano_scores
@@ -11,12 +12,4 @@ PianoCoRe*
 Qwen3.5-4B
 sft_data
 *.log
-
-
-现在是downbeats 作为分隔小节的方法吗？我怎么感觉不对啊
-以 data/pianocore_a_output/Abreu,_Zequinha/Tico-Tico_no_fubá 为例
-我发现不同演奏的M1所包含的音符不一样，且与abcx不一致。从Score中，我们发现 [^g^G^G,^G,,] 应该是第二小节的起点
-
-但是
-Aria_257493_0_refined.mid.tsv 中4个 C 是起点
-data/pianocore_a_output/Abreu,_Zequinha/Tico-Tico_no_fubá/Aria_882751_0_refined.mid.tsv 中 ^F 是起点。都不符合要求！！！
+PianistTransformer

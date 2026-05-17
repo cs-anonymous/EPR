@@ -19,11 +19,30 @@ import random
 from tqdm import tqdm
 
 
+def performance_piece_id(perf_tsv_path: str) -> str:
+    """Convert metadata performance_tsv_path to the JSONL piece_id format."""
+    path = str(perf_tsv_path)
+    if path.startswith('PianoCoRe_output/'):
+        path = path[len('PianoCoRe_output/'):]
+    elif path.startswith('PianoCoRe/aligned/'):
+        path = path[len('PianoCoRe/aligned/'):]
+    if path.endswith('.tsv'):
+        path = path[:-len('.tsv')]
+    return path
+
+
 class MetadataReader:
     """读取和过滤 metadata.csv"""
 
     def __init__(self, metadata_path: str):
         self.df = pd.read_csv(metadata_path)
+
+    @staticmethod
+    def _interpolation_ratio(df: pd.DataFrame) -> pd.Series:
+        return (
+            df['refined_performance_interpolated_note_count'] /
+            df['refined_performance_note_count']
+        )
 
     def get_paired_data(self, min_recall: float = 0.7, quality_filter: bool = True):
         """获取高质量的配对数据"""
@@ -40,6 +59,31 @@ class MetadataReader:
             ]
 
         return filtered
+
+    def get_a_star_data(self):
+        """获取 A* 配对数据（tier_a_star=True）"""
+        return self.df[self.df['tier_a_star'] == True]
+
+    def get_core_s_data(self, star: bool = False):
+        """CoRe-S / CoRe-S* subset: clean CoRe-A* plus all ASAP rows.
+
+        CoRe-S:
+          A* rows with refined_recall >= 0.90 and interpolation_ratio <= 0.10.
+        CoRe-S*:
+          A* rows with refined_recall >= 0.95 and interpolation_ratio <= 0.05.
+        ASAP is represented by is_transcription=False and is kept without
+        these quality filters.
+        """
+        interpolation_ratio = self._interpolation_ratio(self.df)
+        recall_threshold = 0.95 if star else 0.90
+        interpolation_threshold = 0.05 if star else 0.10
+        core_astar = (
+            (self.df['tier_a_star'] == True) &
+            (self.df['refined_recall'] >= recall_threshold) &
+            (interpolation_ratio <= interpolation_threshold)
+        )
+        asap = self.df['is_transcription'] == False
+        return self.df[core_astar | asap]
 
     def get_orphan_scores(self):
         """获取未配对的 score（有 score_abcx_path 但 is_refined=False）"""
@@ -206,6 +250,40 @@ class TSVParser:
         }
 
 
+def compact_perf_event(line: str) -> str:
+    """Serialize one event as pitch:duration:timing:velocity or P:timing:value."""
+    parts = line.replace('\t', ' ').split()
+    if not parts:
+        return ''
+    if parts[0] == 'P':
+        if len(parts) >= 3:
+            return f"P:{parts[1]}:{parts[2]}"
+        return ':'.join(parts)
+    if len(parts) == 1 and parts[0].count(':') >= 3:
+        return parts[0]
+    if len(parts) >= 3 and ':' in parts[0]:
+        return f"{parts[0]}:{parts[1]}:{parts[2]}"
+    return ':'.join(parts)
+
+
+def format_perf_measure(measure_id: str, duration, event_lines: List[str]) -> str:
+    events = [compact_perf_event(line) for line in event_lines]
+    events = [event for event in events if event]
+    return ' '.join([f"{measure_id}:{duration}"] + events)
+
+
+def format_perf_phrase(phrase_id: str, duration, measure_parts: List[str]) -> str:
+    return '\n'.join([f"{phrase_id}:{duration}"] + [part for part in measure_parts if part])
+
+
+def format_score_measure(measure_id: str, content: str) -> str:
+    return f"{measure_id} {content}"
+
+
+def format_score_phrase(phrase_id: str, measure_lines: List[str]) -> str:
+    return '\n'.join([phrase_id] + [line for line in measure_lines if line])
+
+
 class AlignedABCXParser:
     """解析 aligned ABCX 文件"""
 
@@ -249,14 +327,14 @@ class MeasureEPRGenerator:
     """生成 Measure-level EPR 训练样本"""
 
     def __init__(self, metadata_df: pd.DataFrame, base_dir: str, output_dir: str,
-                 max_samples_per_piece: int = 50):
+                 max_samples_per_piece: int = None):
         self.metadata_df = metadata_df
         self.base_dir = Path(base_dir)
         self.output_dir = Path(output_dir)
         self.max_samples_per_piece = max_samples_per_piece
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-    def generate(self):
+    def generate(self, suffix: str = ''):
         """生成 Measure-level EPR 数据"""
         samples = []
 
@@ -308,12 +386,12 @@ class MeasureEPRGenerator:
 
                 perf_data = TSVParser.parse_tsv(str(perf_full_path))
                 piece_samples = self._generate_piece_samples(
-                    score_data, perf_data, row['performance_id']
+                    score_data, perf_data, performance_piece_id(row['performance_tsv_path'])
                 )
                 samples.extend(piece_samples[:self.max_samples_per_piece])
 
         # 保存样本
-        self._save_samples(samples, 'measure_epr')
+        self._save_samples(samples, 'measure_epr', suffix=suffix)
         return len(samples)
 
     def _generate_piece_samples(self, score_data: Dict, perf_data: Dict,
@@ -333,13 +411,21 @@ class MeasureEPRGenerator:
                 if 0 <= idx < len(measure_ids):
                     m_id = measure_ids[idx]
                     if m_id in score_data['measures']:
-                        score_snip.append(f"{m_id}\t{score_data['measures'][m_id]}")
+                        score_snip.append(format_score_measure(m_id, score_data['measures'][m_id]))
 
             # 获取 target performance
             if measure_id in perf_data['measures'] and measure_id in perf_data['measure_durations']:
+                perf_context = ''
+                if i > 0:
+                    prev_m_id = measure_ids[i - 1]
+                    if prev_m_id in perf_data['measures'] and prev_m_id in perf_data['measure_durations']:
+                        prev_duration = perf_data['measure_durations'][prev_m_id]
+                        perf_context = format_perf_measure(
+                            prev_m_id, prev_duration, perf_data['measures'][prev_m_id]
+                        )
+
                 duration = perf_data['measure_durations'][measure_id]
-                perf_events = '\n'.join(perf_data['measures'][measure_id])
-                perf_target = f"{measure_id}:{duration}\n{perf_events}"
+                perf_target = format_perf_measure(measure_id, duration, perf_data['measures'][measure_id])
 
                 # 确定任务类型
                 if i == 0:
@@ -355,6 +441,7 @@ class MeasureEPRGenerator:
                     'instruction': f'Generate performance for {measure_id}',
                     'score_header': score_data['header'],
                     'score_snip': '\n'.join(score_snip),
+                    'perf_context': perf_context,
                     'perf_target': perf_target,
                     'target_measure_id': measure_id,
                     'piece_id': perf_id
@@ -363,9 +450,10 @@ class MeasureEPRGenerator:
 
         return samples
 
-    def _save_samples(self, samples: List[Dict], prefix: str):
+    def _save_samples(self, samples: List[Dict], prefix: str, suffix: str = ''):
         """保存样本到 measure-based 文件夹"""
-        output_file = self.output_dir / 'measure-based' / f'{prefix}.jsonl'
+        fname = f'{prefix}{suffix}.jsonl' if suffix else f'{prefix}.jsonl'
+        output_file = self.output_dir / 'measure-based' / fname
         output_file.parent.mkdir(parents=True, exist_ok=True)
         with open(output_file, 'w', encoding='utf-8') as f:
             for sample in samples:
@@ -377,14 +465,14 @@ class PhraseEPRGenerator:
     """生成 Phrase-level EPR 训练样本"""
 
     def __init__(self, metadata_df: pd.DataFrame, base_dir: str, output_dir: str,
-                 max_samples_per_piece: int = 20):
+                 max_samples_per_piece: int = None):
         self.metadata_df = metadata_df
         self.base_dir = Path(base_dir)
         self.output_dir = Path(output_dir)
         self.max_samples_per_piece = max_samples_per_piece
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-    def generate(self):
+    def generate(self, suffix: str = ''):
         """生成 Phrase-level EPR 数据"""
         samples = []
 
@@ -427,11 +515,11 @@ class PhraseEPRGenerator:
 
                 perf_data = TSVParser.parse_tsv(str(perf_full_path))
                 piece_samples = self._generate_piece_samples(
-                    score_data, perf_data, row['performance_id']
+                    score_data, perf_data, performance_piece_id(row['performance_tsv_path'])
                 )
                 samples.extend(piece_samples[:self.max_samples_per_piece])
 
-        self._save_samples(samples, 'phrase_epr')
+        self._save_samples(samples, 'phrase_epr', suffix=suffix)
         return len(samples)
 
     def _generate_piece_samples(self, score_data: Dict, perf_data: Dict,
@@ -456,26 +544,42 @@ class PhraseEPRGenerator:
                     phrase_content = []
                     for m_id in phrase_measures:
                         if m_id in score_data['measures']:
-                            phrase_content.append(f"{m_id}\t{score_data['measures'][m_id]}")
+                            phrase_content.append(format_score_measure(m_id, score_data['measures'][m_id]))
 
                     if phrase_content:
-                        score_snip.append(f"{p_id}\t{' '.join(phrase_measures)}\n" + '\n'.join(phrase_content))
+                        score_snip.append(format_score_phrase(p_id, phrase_content))
 
             # 获取 target performance phrase
             if phrase_id in perf_data['phrases'] and phrase_id in perf_data['phrase_durations']:
+                perf_context = ''
+                if i > 0:
+                    prev_p_id = phrase_ids[i - 1]
+                    if prev_p_id in perf_data['phrases'] and prev_p_id in perf_data['phrase_durations']:
+                        prev_duration = perf_data['phrase_durations'][prev_p_id]
+                        prev_perf_lines = []
+                        for m_id in perf_data['phrases'][prev_p_id]:
+                            if m_id in perf_data['measures'] and m_id in perf_data['measure_durations']:
+                                m_duration = perf_data['measure_durations'][m_id]
+                                prev_perf_lines.append(
+                                    format_perf_measure(m_id, m_duration, perf_data['measures'][m_id])
+                                )
+                        if prev_perf_lines:
+                            perf_context = format_perf_phrase(prev_p_id, prev_duration, prev_perf_lines)
+
                 phrase_duration = perf_data['phrase_durations'][phrase_id]
 
-                # 构建 performance target: H<X>:<duration>\n + M<X>:<duration>\n + events
-                perf_lines = [f"{phrase_id}:{phrase_duration}"]
+                # Compact phrase target: H<X>:<duration>\nM<X>:<duration> events ...
+                perf_lines = []
 
                 for m_id in perf_data['phrases'][phrase_id]:
                     if m_id in perf_data['measures'] and m_id in perf_data['measure_durations']:
                         m_duration = perf_data['measure_durations'][m_id]
-                        perf_events = '\n'.join(perf_data['measures'][m_id])
-                        perf_lines.append(f"{m_id}:{m_duration}\n{perf_events}")
+                        perf_lines.append(
+                            format_perf_measure(m_id, m_duration, perf_data['measures'][m_id])
+                        )
 
-                if len(perf_lines) > 1:  # 至少有 H 和一个 M
-                    perf_target = '\n'.join(perf_lines)
+                if perf_lines:
+                    perf_target = format_perf_phrase(phrase_id, phrase_duration, perf_lines)
 
                     # 确定任务类型
                     if i == 0:
@@ -491,6 +595,7 @@ class PhraseEPRGenerator:
                         'instruction': f'Generate performance for {phrase_id}',
                         'score_header': score_data['header'],
                         'score_snip': '\n'.join(score_snip),
+                        'perf_context': perf_context,
                         'perf_target': perf_target,
                         'target_phrase_id': phrase_id,
                         'piece_id': perf_id
@@ -499,9 +604,10 @@ class PhraseEPRGenerator:
 
         return samples
 
-    def _save_samples(self, samples: List[Dict], prefix: str):
+    def _save_samples(self, samples: List[Dict], prefix: str, suffix: str = ''):
         """保存样本到 phrase-based 文件夹"""
-        output_file = self.output_dir / 'phrase-based' / f'{prefix}.jsonl'
+        fname = f'{prefix}{suffix}.jsonl' if suffix else f'{prefix}.jsonl'
+        output_file = self.output_dir / 'phrase-based' / fname
         output_file.parent.mkdir(parents=True, exist_ok=True)
         with open(output_file, 'w', encoding='utf-8') as f:
             for sample in samples:
@@ -526,6 +632,11 @@ def main():
                         help='Minimum refined_recall for paired data')
     parser.add_argument('--quality_filter', action='store_true',
                         help='Optionally restrict tier A+ rows to high quality/score labels')
+    parser.add_argument('--a-star', action='store_true',
+                        help='Also generate EPR A* subset (tier_a_star only)')
+    parser.add_argument('--dataset-filter', type=str,
+                        choices=['core-s', 'core-s-star'], default=None,
+                        help='Override EPR paired rows. core-s/core-s-star = clean CoRe-A* plus all is_transcription=False rows')
 
     args = parser.parse_args()
 
@@ -538,10 +649,15 @@ def main():
     reader = MetadataReader(args.metadata)
 
     # 获取配对数据
-    paired_df = reader.get_paired_data(
-        min_recall=args.min_recall,
-        quality_filter=args.quality_filter
-    )
+    if args.dataset_filter == 'core-s':
+        paired_df = reader.get_core_s_data(star=False)
+    elif args.dataset_filter == 'core-s-star':
+        paired_df = reader.get_core_s_data(star=True)
+    else:
+        paired_df = reader.get_paired_data(
+            min_recall=args.min_recall,
+            quality_filter=args.quality_filter
+        )
     print(f"✓ Found {len(paired_df)} high-quality paired samples")
     print(f"  - Unique pieces: {paired_df.groupby(['composer', 'composition', 'movement']).ngroups}")
 
@@ -560,6 +676,27 @@ def main():
         )
         count = generator.generate()
         print(f"✓ Generated {count} Phrase-level EPR samples")
+
+    # EPR A* subset
+    if args.a_star:
+        a_star_df = reader.get_a_star_data()
+        print(f"\n✓ A* subset: {len(a_star_df)} rows, {a_star_df.groupby(['composer', 'composition', 'movement']).ngroups} pieces")
+
+        if args.task in ['measure_epr', 'all']:
+            print("\nGenerating Measure-level EPR A* data...")
+            generator = MeasureEPRGenerator(
+                a_star_df, args.base_dir, args.output_dir
+            )
+            count = generator.generate(suffix='_a_star')
+            print(f"✓ Generated {count} Measure-level EPR A* samples")
+
+        if args.task in ['phrase_epr', 'all']:
+            print("\nGenerating Phrase-level EPR A* data...")
+            generator = PhraseEPRGenerator(
+                a_star_df, args.base_dir, args.output_dir
+            )
+            count = generator.generate(suffix='_a_star')
+            print(f"✓ Generated {count} Phrase-level EPR A* samples")
 
     print("\n" + "=" * 60)
     print("Data generation complete!")
