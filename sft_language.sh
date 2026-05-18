@@ -3,14 +3,14 @@
 #
 # Defaults train Qwen3.5-4B LoRA on the merged score/performance language
 # dataset produced by prepare_sft_data.py:
-#   sft_data/swift_format/language_train.jsonl
-#   sft_data/swift_format/language_val.jsonl
+#   sft_data/core-s1/sft_language_train.jsonl
+#   sft_data/core-s1-val/sft_language_val.jsonl
 
 set -euo pipefail
 
 MODEL_PATH="${MODEL_PATH:-./Qwen3.5-4B}"
-TRAIN_DATA="${TRAIN_DATA:-./sft_data/swift_format/language_train.jsonl}"
-VAL_DATA="${VAL_DATA:-./sft_data/swift_format/language_val.jsonl}"
+TRAIN_DATA="${TRAIN_DATA:-./sft_data/core-s1/sft_language_train.jsonl}"
+VAL_DATA="${VAL_DATA:-./sft_data/core-s1-val/sft_language_val_20k.jsonl}"
 OUTPUT_DIR="${OUTPUT_DIR:-./output/language-sft}"
 
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
@@ -18,19 +18,19 @@ NPROC_PER_NODE="${NPROC_PER_NODE:-4}"
 MASTER_PORT="${MASTER_PORT:-29501}"
 
 NUM_TRAIN_EPOCHS="${NUM_TRAIN_EPOCHS:-1}"
-PER_DEVICE_TRAIN_BATCH_SIZE="${PER_DEVICE_TRAIN_BATCH_SIZE:-1}"
-PER_DEVICE_EVAL_BATCH_SIZE="${PER_DEVICE_EVAL_BATCH_SIZE:-1}"
-GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-4}"
+PER_DEVICE_TRAIN_BATCH_SIZE="${PER_DEVICE_TRAIN_BATCH_SIZE:-4}"
+PER_DEVICE_EVAL_BATCH_SIZE="${PER_DEVICE_EVAL_BATCH_SIZE:-4}"
+GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-2}"
 LEARNING_RATE="${LEARNING_RATE:-2e-4}"
-MAX_LENGTH="${MAX_LENGTH:-2048}"
-LORA_RANK="${LORA_RANK:-16}"
-LORA_ALPHA="${LORA_ALPHA:-32}"
+MAX_LENGTH="${MAX_LENGTH:-512}"
+LORA_RANK="${LORA_RANK:-32}"
+LORA_ALPHA="${LORA_ALPHA:-64}"
 LORA_DROPOUT="${LORA_DROPOUT:-0.1}"
 LOGGING_STEPS="${LOGGING_STEPS:-50}"
-EVAL_STEPS="${EVAL_STEPS:-200}"
-SAVE_STEPS="${SAVE_STEPS:-200}"
+EVAL_STEPS="${EVAL_STEPS:-5000}"
+SAVE_STEPS="${SAVE_STEPS:-5000}"
 SAVE_TOTAL_LIMIT="${SAVE_TOTAL_LIMIT:-3}"
-DATALOADER_NUM_WORKERS="${DATALOADER_NUM_WORKERS:-4}"
+DATALOADER_NUM_WORKERS="${DATALOADER_NUM_WORKERS:-2}"
 
 export MKL_SERVICE_FORCE_INTEL="${MKL_SERVICE_FORCE_INTEL:-1}"
 export CUDA_VISIBLE_DEVICES
