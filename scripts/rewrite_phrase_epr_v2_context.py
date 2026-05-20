@@ -28,7 +28,9 @@ from transformers import AutoTokenizer
 
 COUNT_FIELDS = ["instruction", "score_header", "score_snip", "perf_context", "perf_target"]
 PHRASE_RE = re.compile(r"^(H\d+)(?::\d+)?\s*$")
+TOKEN_PHRASE_RE = re.compile(r"^<H><V(\d{3})>\s*$")
 MEASURE_RE = re.compile(r"^M\d+(?::|\s|\t|$)")
+TOKEN_MEASURE_RE = re.compile(r"^<M><V\d{3}>(?:\t|$)")
 
 
 def elapsed(start: float) -> str:
@@ -51,12 +53,19 @@ def token_lengths(tokenizer, texts: list[str]) -> list[int]:
 
 
 def phrase_label(line: str) -> str | None:
-    match = PHRASE_RE.match(line.strip())
-    return match.group(1) if match else None
+    stripped = line.strip()
+    match = PHRASE_RE.match(stripped)
+    if match:
+        return match.group(1)
+    token_match = TOKEN_PHRASE_RE.match(stripped)
+    if token_match:
+        return f"H{int(token_match.group(1)) + 1}"
+    return None
 
 
 def is_measure_line(line: str) -> bool:
-    return bool(MEASURE_RE.match(line.strip()))
+    stripped = line.strip()
+    return bool(MEASURE_RE.match(stripped) or TOKEN_MEASURE_RE.match(stripped))
 
 
 def phrase_groups(score_snip: str) -> list[tuple[str, list[str]]]:

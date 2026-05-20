@@ -10,6 +10,7 @@ SPIRE SFT 数据生成脚本
 
 import json
 import os
+import re
 import argparse
 import pandas as pd
 from pathlib import Path
@@ -214,6 +215,10 @@ class TSVParser:
         phrase_durations = {}  # H1 -> duration
         current_phrase = None
         current_measure = None
+        strict_structural = False
+        phrase_count = 0
+        measure_count = 0
+        pending_ext = {}
 
         for line in lines:
             line = line.rstrip('\n')
@@ -222,26 +227,63 @@ class TSVParser:
 
             if line.startswith('#'):
                 header_lines.append(line)
+                if line.strip() == '# structural_duration=u16_hi_lo':
+                    strict_structural = True
             elif line.startswith('H') and '\t' in line:
                 parts = line.split('\t')
-                current_phrase = parts[0]
-                phrases[current_phrase] = []
-                if len(parts) >= 3:
-                    start = int(parts[1])
-                    end = int(parts[2])
-                    phrase_durations[current_phrase] = end - start
+                if parts[0] == 'H' and len(parts) == 4:
+                    phrase_count += 1
+                    current_phrase = f'H{phrase_count}'
+                    phrases[current_phrase] = []
+                    if strict_structural:
+                        phrase_durations[current_phrase] = int(parts[2]) * 256 + int(parts[3])
+                    else:
+                        phrase_durations[current_phrase] = int(parts[2])
+                    current_measure = None
+                    pending_ext.clear()
+                else:
+                    current_phrase = parts[0]
+                    phrases[current_phrase] = []
+                    if len(parts) >= 3:
+                        start = int(parts[1])
+                        end = int(parts[2])
+                        phrase_durations[current_phrase] = end - start
             elif line.startswith('M') and '\t' in line:
                 parts = line.split('\t')
-                current_measure = parts[0]
-                if current_phrase and current_measure not in phrases[current_phrase]:
-                    phrases[current_phrase].append(current_measure)
-                if len(parts) >= 3:
-                    # M1	0	104 -> duration = 104 - 0 = 104
-                    start = int(parts[1])
-                    end = int(parts[2])
-                    measure_durations[current_measure] = end - start
+                if parts[0] == 'M' and len(parts) == 4:
+                    measure_count += 1
+                    current_measure = f'M{measure_count}'
+                    if current_phrase and current_measure not in phrases[current_phrase]:
+                        phrases[current_phrase].append(current_measure)
+                    if strict_structural:
+                        measure_durations[current_measure] = int(parts[2]) * 256 + int(parts[3])
+                    else:
+                        measure_durations[current_measure] = int(parts[2])
+                    pending_ext.clear()
+                else:
+                    current_measure = parts[0]
+                    if current_phrase and current_measure not in phrases[current_phrase]:
+                        phrases[current_phrase].append(current_measure)
+                    if len(parts) >= 3:
+                        # M1	0	104 -> duration = 104 - 0 = 104
+                        start = int(parts[1])
+                        end = int(parts[2])
+                        measure_durations[current_measure] = end - start
             elif current_measure:
-                measures[current_measure].append(line)
+                parts = line.split('\t')
+                if len(parts) == 4 and parts[0] in ('EXD', 'EXO'):
+                    pending_ext[parts[0]] = int(parts[2]) * 256 + int(parts[3])
+                    continue
+                if len(parts) == 4:
+                    event, value, duration, offset = parts
+                    if duration == 'EXT':
+                        duration = str(pending_ext.get('EXD', 255))
+                    if offset == 'EXT':
+                        offset = str(pending_ext.get('EXO', 255))
+                    measures[current_measure].append('\t'.join([event, value, duration, offset]))
+                    pending_ext.clear()
+                else:
+                    measures[current_measure].append(line)
 
         return {
             'header': '\n'.join(header_lines),
@@ -253,18 +295,14 @@ class TSVParser:
 
 
 def compact_perf_event(line: str) -> str:
-    """Serialize one event as pitch:duration:timing:velocity or P:timing:value."""
+    """Serialize one semantic 4-column event as colon-separated text."""
     parts = line.replace('\t', ' ').split()
     if not parts:
         return ''
-    if parts[0] == 'P':
-        if len(parts) >= 3:
-            return f"P:{parts[1]}:{parts[2]}"
-        return ':'.join(parts)
+    if len(parts) >= 4:
+        return ':'.join(parts[:4])
     if len(parts) == 1 and parts[0].count(':') >= 3:
         return parts[0]
-    if len(parts) >= 3 and ':' in parts[0]:
-        return f"{parts[0]}:{parts[1]}:{parts[2]}"
     return ':'.join(parts)
 
 
@@ -278,12 +316,20 @@ def format_perf_phrase(phrase_id: str, duration, measure_parts: List[str]) -> st
     return '\n'.join([f"{phrase_id}:{duration}"] + [part for part in measure_parts if part])
 
 
-def format_score_measure(measure_id: str, content: str) -> str:
-    return f"{measure_id} {content}"
+def format_score_measure(measure_id: str, content: str, display_id: str | None = None) -> str:
+    label = display_id
+    if label is None:
+        idx = int(measure_id[1:]) - 1
+        label = f"<M><V{idx:03d}>"
+    return f"{label}\t{content}"
 
 
-def format_score_phrase(phrase_id: str, measure_lines: List[str]) -> str:
-    return '\n'.join([phrase_id] + [line for line in measure_lines if line])
+def format_score_phrase(phrase_id: str, measure_lines: List[str], display_id: str | None = None) -> str:
+    label = display_id
+    if label is None:
+        idx = int(phrase_id[1:]) - 1
+        label = f"<H><V{idx:03d}>"
+    return '\n'.join([label] + [line for line in measure_lines if line])
 
 
 class AlignedABCXParser:
@@ -298,7 +344,11 @@ class AlignedABCXParser:
         header_lines = []
         measures = {}
         phrases = {}
+        phrase_display_ids = {}
+        measure_display_ids = {}
         current_phrase = None
+        phrase_count = 0
+        measure_count = 0
 
         for line in lines:
             line = line.rstrip('\n')
@@ -307,12 +357,16 @@ class AlignedABCXParser:
 
             if line.startswith(('X:', 'T:', 'C:', '%%', 'L:', 'Q:', 'M:', 'K:')):
                 header_lines.append(line)
-            elif line.startswith('H') and '\t' not in line:
-                current_phrase = line.strip()
+            elif (phrase_token_id := _parse_score_phrase_token(line)) is not None:
+                phrase_count += 1
+                current_phrase = f'H{phrase_count}'
+                phrase_display_ids[current_phrase] = f'<H><V{phrase_token_id:03d}>'
                 phrases[current_phrase] = []
-            elif line.startswith('M') and '\t' in line:
+            elif (measure_token_id := _parse_score_measure_token(line)) is not None and '\t' in line:
                 parts = line.split('\t', 1)
-                measure_id = parts[0]
+                measure_count += 1
+                measure_id = f'M{measure_count}'
+                measure_display_ids[measure_id] = f'<M><V{measure_token_id:03d}>'
                 measure_content = parts[1] if len(parts) > 1 else ''
                 measures[measure_id] = measure_content
                 if current_phrase:
@@ -321,8 +375,31 @@ class AlignedABCXParser:
         return {
             'header': '\n'.join(header_lines),
             'measures': measures,
-            'phrases': phrases
+            'phrases': phrases,
+            'phrase_display_ids': phrase_display_ids,
+            'measure_display_ids': measure_display_ids,
         }
+
+
+def _parse_score_phrase_token(line: str) -> int | None:
+    stripped = line.strip()
+    match = re.fullmatch(r"<H><V(\d{3})>", stripped)
+    if match:
+        return int(match.group(1))
+    if stripped.startswith('H') and stripped[1:].isdigit():
+        return int(stripped[1:])
+    return None
+
+
+def _parse_score_measure_token(line: str) -> int | None:
+    stripped = line.strip()
+    token = stripped.split('\t', 1)[0]
+    match = re.fullmatch(r"<M><V(\d{3})>", token)
+    if match:
+        return int(match.group(1))
+    if token.startswith('M') and token[1:].isdigit():
+        return int(token[1:])
+    return None
 
 
 class MeasureEPRGenerator:
@@ -417,7 +494,11 @@ class MeasureEPRGenerator:
                 if 0 <= idx < len(measure_ids):
                     m_id = measure_ids[idx]
                     if m_id in score_data['measures']:
-                        score_snip.append(format_score_measure(m_id, score_data['measures'][m_id]))
+                        score_snip.append(
+                            format_score_measure(
+                                m_id, score_data['measures'][m_id], score_data['measure_display_ids'].get(m_id)
+                            )
+                        )
 
             # 获取 target performance
             if measure_id in perf_data['measures'] and measure_id in perf_data['measure_durations']:
@@ -554,10 +635,16 @@ class PhraseEPRGenerator:
                     phrase_content = []
                     for m_id in phrase_measures:
                         if m_id in score_data['measures']:
-                            phrase_content.append(format_score_measure(m_id, score_data['measures'][m_id]))
+                            phrase_content.append(
+                                format_score_measure(
+                                    m_id, score_data['measures'][m_id], score_data['measure_display_ids'].get(m_id)
+                                )
+                            )
 
                     if phrase_content:
-                        score_snip.append(format_score_phrase(p_id, phrase_content))
+                        score_snip.append(
+                            format_score_phrase(p_id, phrase_content, score_data['phrase_display_ids'].get(p_id))
+                        )
 
             # 获取 target performance phrase
             if phrase_id in perf_data['phrases'] and phrase_id in perf_data['phrase_durations']:

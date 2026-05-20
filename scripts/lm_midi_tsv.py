@@ -6,8 +6,8 @@ The TSV format is a human-readable 4-column view of LM-MIDI events:
     event<TAB>value<TAB>duration<TAB>offset
 
 Each row maps directly to one LM-MIDI event, with extension events inserted
-automatically when converting to the compact token sequence.  TSV PAD slots
-are written as 0 and become <SLOT_PAD> tokens.
+automatically when converting to the compact token sequence.  TSV empty slots
+are written as 0 and become <NIL> tokens.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ LOGIC_MIDDLE_C_OCTAVE = 3
 LOGIC_OCTAVE_OFFSET = 2  # MIDI 60 -> C3, so octave = pitch // 12 - 2.
 MAX_U8 = 255
 MAX_U16 = 65535
+TO_EXT = "EXT"
 
 STRUCTURAL_EVENTS = {
     "H": "<H>",
@@ -40,6 +41,10 @@ PEDAL_EVENTS = {
     "PED_SUS": "<P>",
     "PED_SOFT": "<P1>",
     "PED_SOS": "<P2>",
+}
+EXTENSION_EVENTS = {
+    "EXD": "<EXD>",
+    "EXO": "<EXO>",
 }
 NOTE_RE = re.compile(r"^([A-G])(#?)(-?\d+)$")
 
@@ -84,18 +89,22 @@ def n_token(pitch: int) -> str:
     return f"<N{pitch:03d}>"
 
 
+def nil_token() -> str:
+    return "<NIL>"
+
+
 def split_u16(value: int) -> tuple[int, int]:
     _require_range(value, 0, MAX_U16, "16-bit timing value")
     return divmod(value, 256)
 
 
-def parse_lm_midi_tsv(text: str) -> list[tuple[str, int, int, int]]:
+def parse_lm_midi_tsv(text: str) -> list[tuple[str, str, str, str]]:
     """Parse event rows from LM-MIDI TSV text.
 
     Comment lines beginning with # and blank lines are ignored. Event rows must
     have exactly 4 tab-separated columns.
     """
-    rows: list[tuple[str, int, int, int]] = []
+    rows: list[tuple[str, str, str, str]] = []
     for line_idx, raw_line in enumerate(text.splitlines(), 1):
         line = raw_line.strip()
         if not line or line.startswith("#"):
@@ -104,14 +113,12 @@ def parse_lm_midi_tsv(text: str) -> list[tuple[str, int, int, int]]:
         if len(parts) != 4:
             raise ValueError(f"Line {line_idx}: expected 4 tab-separated columns, got {len(parts)}")
         event = parts[0].strip()
-        try:
-            value = int(parts[1])
-            duration = int(parts[2])
-            offset = int(parts[3])
-        except ValueError as exc:
-            raise ValueError(f"Line {line_idx}: value/duration/offset must be integers") from exc
-        if value < 0 or duration < 0 or offset < 0:
-            raise ValueError(f"Line {line_idx}: negative values are not allowed")
+        value = parts[1].strip()
+        duration = parts[2].strip()
+        offset = parts[3].strip()
+        _validate_tsv_slot(value, f"Line {line_idx} value")
+        _validate_tsv_slot(duration, f"Line {line_idx} duration")
+        _validate_tsv_slot(offset, f"Line {line_idx} offset")
         rows.append((event, value, duration, offset))
     return rows
 
@@ -120,44 +127,137 @@ def lm_midi_tsv_to_tokens(text: str, wrap: bool = True, pretty: bool = False) ->
     """Convert LM-MIDI TSV text into a compact LM-MIDI token sequence."""
     token_events: list[str] = []
     for event, value, duration, offset in parse_lm_midi_tsv(text):
-        token_events.extend(row_to_lm_midi_events(event, value, duration, offset))
+        token_events.extend(
+            row_to_lm_midi_events(
+                event,
+                value,
+                duration,
+                offset,
+            )
+        )
     if wrap:
         token_events = ["<MIDI>", *token_events, "</MIDI>"]
     return "\n".join(token_events) if pretty else "".join(token_events)
 
 
-def row_to_lm_midi_events(event: str, value: int, duration: int, offset: int) -> list[str]:
+def row_to_lm_midi_events(
+    event: str,
+    value: str,
+    duration: str,
+    offset: str,
+) -> list[str]:
     """Convert one TSV row into one or more LM-MIDI token events."""
     if event in STRUCTURAL_EVENTS:
-        _require_range(value, 0, MAX_U8, f"{event} index")
+        value_u8 = _parse_required_int(value, f"{event} index")
+        duration_val = _parse_required_int(duration, f"{event} duration")
+        offset_val = _parse_required_int(offset, f"{event} offset")
+        _require_range(value_u8, 0, 127, f"{event} index")
+        _require_range(duration_val, 0, MAX_U8, f"{event} duration hi")
+        _require_range(offset_val, 0, MAX_U8, f"{event} duration lo")
+        return [f"{STRUCTURAL_EVENTS[event]}{v_token(value_u8)}{t_token(duration_val)}{t_token(offset_val)}"]
+
+    if event in EXTENSION_EVENTS:
+        pad_u8 = _parse_required_int(value, f"{event} pad")
+        hi_u8 = _parse_required_int(duration, f"{event} hi")
+        lo_u8 = _parse_required_int(offset, f"{event} lo")
+        _require_pad(pad_u8, f"{event} pad")
+        _require_range(hi_u8, 0, MAX_U8, f"{event} hi")
+        _require_range(lo_u8, 0, MAX_U8, f"{event} lo")
+        return [f"{EXTENSION_EVENTS[event]}{nil_token()}{t_token(hi_u8)}{t_token(lo_u8)}"]
+
+    if event in PEDAL_EVENTS:
+        value_u8 = _parse_required_int(value, f"{event} value")
+        duration_u8 = _parse_required_int(duration, f"{event} duration")
+        _require_range(value_u8, 0, 127, f"{event} value")
+        _require_pad(duration_u8, f"{event} duration")
+        events: list[str] = []
+        offset_slot = _timing_slot_or_ext(offset, "EXO", events)
+        events.append(f"{PEDAL_EVENTS[event]}{v_token(value_u8)}{nil_token()}{offset_slot}")
+        return events
+
+    pitch = logic_note_to_midi_pitch(event)
+    value_u8 = _parse_required_int(value, "note velocity")
+    _require_range(value_u8, 0, 127, "note velocity")
+    events = []
+    duration_slot = _timing_slot_or_ext(duration, "EXD", events)
+    offset_slot = _timing_slot_or_ext(offset, "EXO", events)
+    events.append(f"{n_token(pitch)}{v_token(value_u8)}{duration_slot}{offset_slot}")
+    return events
+
+
+def semantic_event_to_tsv_rows(event: str, value: int, duration: int, offset: int) -> list[tuple[str, str, str, str]]:
+    """Expand one semantic LM-MIDI event into strict 4-column TSV rows.
+
+    All numeric TSV slots are kept in the 0..255 range. Long note durations
+    and note/pedal offsets are emitted as explicit EX* rows, followed by a
+    note/pedal row whose affected slot is set to EXT.
+    """
+    if event in STRUCTURAL_EVENTS:
+        _require_range(value, 0, 127, f"{event} index")
+        _require_range(duration, 0, MAX_U16, f"{event} duration")
         _require_pad(offset, f"{event} offset")
         hi, lo = split_u16(duration)
-        return [f"{STRUCTURAL_EVENTS[event]}{t_token(value)}{t_token(hi)}{t_token(lo)}"]
+        return [(event, str(value), str(hi), str(lo))]
 
     if event in PEDAL_EVENTS:
         _require_range(value, 0, 127, f"{event} value")
         _require_pad(duration, f"{event} duration")
-        events: list[str] = []
-        offset_slot = _timing_slot_or_ext(offset, "EXT_OFF", events)
-        events.append(f"{PEDAL_EVENTS[event]}{v_token(value)}<SLOT_PAD>{offset_slot}")
-        return events
+        rows: list[tuple[str, str, str, str]] = []
+        offset_slot = _tsv_timing_slot_or_ext(offset, "EXO", rows)
+        rows.append((event, str(value), "0", offset_slot))
+        return rows
 
     pitch = logic_note_to_midi_pitch(event)
+    _require_range(pitch, 0, 127, "pitch")
     _require_range(value, 0, 127, "note velocity")
-    events = []
-    duration_slot = _timing_slot_or_ext(duration, "EXT_DUR", events)
-    offset_slot = _timing_slot_or_ext(offset, "EXT_OFF", events)
-    events.append(f"{n_token(pitch)}{v_token(value)}{duration_slot}{offset_slot}")
-    return events
+    rows = []
+    duration_slot = _tsv_timing_slot_or_ext(duration, "EXD", rows)
+    offset_slot = _tsv_timing_slot_or_ext(offset, "EXO", rows)
+    rows.append((event, str(value), duration_slot, offset_slot))
+    return rows
 
 
-def _timing_slot_or_ext(value: int, ext_event: str, output_events: list[str]) -> str:
+def tsv_row_to_line(row: tuple[str, str, str, str]) -> str:
+    return "\t".join(row)
+
+
+def _timing_slot_or_ext(value: str, ext_event: str, output_events: list[str]) -> str:
+    if value == TO_EXT:
+        return "<EXT>"
+    value_int = _parse_required_int(value, f"{ext_event} timing value")
+    _require_range(value_int, 0, MAX_U16, f"{ext_event} timing value")
+    if value_int <= MAX_U8:
+        return t_token(value_int)
+    hi, lo = split_u16(value_int)
+    output_events.append(f"<{ext_event}>{nil_token()}{t_token(hi)}{t_token(lo)}")
+    return "<EXT>"
+
+
+def _tsv_timing_slot_or_ext(value: int, ext_event: str, output_rows: list[tuple[str, str, str, str]]) -> str:
     _require_range(value, 0, MAX_U16, f"{ext_event} timing value")
     if value <= MAX_U8:
-        return t_token(value)
+        return str(value)
     hi, lo = split_u16(value)
-    output_events.append(f"<{ext_event}>{t_token(hi)}{t_token(lo)}<SLOT_PAD>")
-    return "<TO_EXT>"
+    output_rows.append((ext_event, "0", str(hi), str(lo)))
+    return TO_EXT
+
+
+def _parse_required_int(value: str, label: str) -> int:
+    if value == TO_EXT:
+        raise ValueError(f"{label} cannot be TO_EXT in this context")
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise ValueError(f"{label} must be an integer or TO_EXT, got {value!r}") from exc
+    if parsed < 0:
+        raise ValueError(f"{label} must be non-negative, got {parsed}")
+    return parsed
+
+
+def _validate_tsv_slot(value: str, label: str) -> None:
+    if value == TO_EXT:
+        return
+    _parse_required_int(value, label)
 
 
 def _require_range(value: int, low: int, high: int, label: str) -> None:

@@ -24,7 +24,7 @@ from tqdm import tqdm
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from aligned_abcx_format import AlignedAbcxError, build_aligned_abcx
-from lm_midi_tsv import midi_pitch_to_logic_note
+from lm_midi_tsv import midi_pitch_to_logic_note, semantic_event_to_tsv_rows, tsv_row_to_line
 
 
 @dataclass
@@ -915,9 +915,10 @@ def generate_performance_tsv_with_phrases(
         "# columns=event\tvalue\tduration\toffset",
         "# pitch=logic-pro-note",
         "# middle_c=C3",
-        "# slot_pad=0",
+        "# nil=0",
         "# note_offset=previous_note_onset",
         "# pedal_offset=most_recent_note_onset",
+        "# structural_duration=u16_hi_lo",
         "# slice_type=measure",
     ]
 
@@ -953,7 +954,8 @@ def generate_performance_tsv_with_phrases(
         if mnum_or_none is None:
             phrase_index += 1
             measure_local_index = 0
-            lines.append(f"H\t{phrase_index}\t{max(0, end_tick - start_tick)}\t0")
+            for row in semantic_event_to_tsv_rows("H", phrase_index, max(0, end_tick - start_tick), 0):
+                lines.append(tsv_row_to_line(row))
             continue
 
         m_start_s = start_tick * 0.01
@@ -974,7 +976,8 @@ def generate_performance_tsv_with_phrases(
                 events.append((p_tick, 1, None, 0, p["val"]))
 
         # Structural rows do not affect note-offset reference.
-        lines.append(f"M\t{measure_local_index}\t{max(0, end_tick - start_tick)}\t0")
+        for row in semantic_event_to_tsv_rows("M", measure_local_index, max(0, end_tick - start_tick), 0):
+            lines.append(tsv_row_to_line(row))
         measure_local_index += 1
 
         # Notes establish the timing anchor.  Pedals at the same timestamp are
@@ -985,12 +988,17 @@ def generate_performance_tsv_with_phrases(
             if kind == 0:
                 note_offset = 0 if last_note_tick is None else max(0, abs_tick - last_note_tick)
                 last_note_tick = abs_tick
-                lines.append(
-                    f"{midi_pitch_to_logic_note(int(pitch))}\t{int(value)}\t{int(duration)}\t{note_offset}"
-                )
+                for row in semantic_event_to_tsv_rows(
+                    midi_pitch_to_logic_note(int(pitch)),
+                    int(value),
+                    int(duration),
+                    note_offset,
+                ):
+                    lines.append(tsv_row_to_line(row))
             else:
                 pedal_offset = 0 if last_note_tick is None else max(0, abs_tick - last_note_tick)
-                lines.append(f"P\t{int(value)}\t0\t{pedal_offset}")
+                for row in semantic_event_to_tsv_rows("P", int(value), 0, pedal_offset):
+                    lines.append(tsv_row_to_line(row))
 
     output_tsv.parent.mkdir(parents=True, exist_ok=True)
     with open(output_tsv, "w", encoding="utf-8") as f:

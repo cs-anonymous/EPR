@@ -21,6 +21,7 @@ import hashlib
 import json
 import os
 import random
+import re
 import shutil
 import tempfile
 import time
@@ -87,12 +88,16 @@ def record_text(record: dict) -> str:
 
 def _is_phrase_header(line: str) -> bool:
     stripped = line.strip()
-    return stripped.startswith("H") and stripped[1:].isdigit()
+    return bool(re.fullmatch(r"<H><V\d{3}>", stripped)) or (
+        stripped.startswith("H") and stripped[1:].isdigit()
+    )
 
 
 def _is_measure_line(line: str) -> bool:
     stripped = line.strip()
-    return stripped.startswith("M") and len(stripped) > 1 and stripped[1].isdigit()
+    return bool(re.match(r"^<M><V\d{3}>(?:\t|$)", stripped)) or (
+        stripped.startswith("M") and len(stripped) > 1 and stripped[1].isdigit()
+    )
 
 
 def _phrase_groups(score_snip: str) -> list[tuple[str, list[str]]]:
