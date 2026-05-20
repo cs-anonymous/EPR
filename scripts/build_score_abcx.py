@@ -4,8 +4,8 @@
 Saves output to PianoCoRe/score/<Composer>/<Piece>/score.abcx
 
 Usage:
-    python scripts/reconvert_abcx.py --jobs 16
-    python scripts/reconvert_abcx.py --jobs 16 --limit 100
+    python scripts/build_abcx.py --jobs 16
+    python scripts/build_abcx.py --jobs 16 --limit 100
 """
 from __future__ import annotations
 
@@ -102,7 +102,7 @@ def main(argv: Optional[list] = None) -> int:
     parser.add_argument("--limit", type=int, default=None,
                         help="Limit to first N files.")
     parser.add_argument("--force", action="store_true",
-                        help="Force reconvert even if output exists.")
+                        help="Force conversion even if output exists.")
     args = parser.parse_args(argv)
 
     raw_dir = Path(args.raw_dir or "PianoCoRe/raw").expanduser().resolve()

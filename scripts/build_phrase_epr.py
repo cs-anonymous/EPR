@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-生成 Phrase-level EPR 数据（V2 版本）
+生成 Phrase-level EPR 数据
 
 新设计：
 - score_snip: 上一小节乐谱 (M_prev) + 当前整句乐谱 (H_k) + 下一小节乐谱 (M_next)
@@ -25,7 +25,11 @@ from tqdm import tqdm
 def performance_piece_id(perf_tsv_path: str) -> str:
     """Convert metadata performance_tsv_path to the JSONL piece_id format."""
     path = str(perf_tsv_path)
-    if path.startswith('PianoCoRe_output/'):
+    if path.startswith('PianoCoReS/miditsv/'):
+        path = path[len('PianoCoReS/miditsv/'):]
+    elif path.startswith('PianoCoReS/aligned/'):
+        path = path[len('PianoCoReS/aligned/'):]
+    elif path.startswith('PianoCoRe_output/'):
         path = path[len('PianoCoRe_output/'):]
     elif path.startswith('PianoCoRe/aligned/'):
         path = path[len('PianoCoRe/aligned/'):]
@@ -236,8 +240,8 @@ def format_score_phrase(phrase_id: str, measure_lines: List[str], display_id: st
     return '\n'.join([label] + [line for line in measure_lines if line])
 
 
-class PhraseEPRGeneratorV2:
-    """生成 Phrase-level EPR 训练样本（V2 版本）
+class PhraseEPRGenerator:
+    """生成 Phrase-level EPR 训练样本
 
     新设计：
     - score_snip: M_prev + H_k + M_next
@@ -258,7 +262,7 @@ class PhraseEPRGeneratorV2:
 
         grouped = self.metadata_df.groupby(['composer', 'composition', 'movement'])
 
-        for (composer, composition, movement), group in tqdm(grouped, desc="Generating Phrase EPR V2"):
+        for (composer, composition, movement), group in tqdm(grouped, desc="Generating Phrase EPR"):
             score_abcx_path = group.iloc[0]['score_abcx_path']
             if pd.isna(score_abcx_path):
                 continue
@@ -304,7 +308,7 @@ class PhraseEPRGeneratorV2:
 
     def _generate_piece_samples(self, score_data: Dict, perf_data: Dict,
                                 perf_id: str) -> List[Dict]:
-        """为单个曲子生成乐句级样本（V2 版本）
+        """为单个曲子生成乐句级样本（版本）
 
         新设计：
         - score_snip: M_prev + H_k + M_next
@@ -434,7 +438,7 @@ class PhraseEPRGeneratorV2:
     def _save_samples(self, samples: List[Dict], prefix: str, suffix: str = ''):
         """保存样本到 phrase-based 文件夹"""
         fname = f'{prefix}{suffix}.jsonl' if suffix else f'{prefix}.jsonl'
-        output_file = self.output_dir / 'phrase-based-v2' / fname
+        output_file = self.output_dir / 'phrase-based-' / fname
         output_file.parent.mkdir(parents=True, exist_ok=True)
         with open(output_file, 'w', encoding='utf-8') as f:
             for sample in samples:
@@ -485,7 +489,7 @@ class MetadataReader:
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Generate Phrase EPR V2 data with reduced context'
+        description='Build Phrase EPR data with compact context'
     )
     parser.add_argument('--metadata', type=str, default='PianoCoRe/metadata.csv',
                         help='Path to metadata.csv')
@@ -504,7 +508,7 @@ def main():
     args = parser.parse_args()
 
     print("=" * 60)
-    print("SPIRE Phrase EPR V2 Data Generation")
+    print("SPIRE Phrase EPR Data Generation")
     print("=" * 60)
 
     # 读取 metadata
@@ -524,12 +528,12 @@ def main():
     print(f"✓ Found {len(paired_df)} high-quality paired samples")
     print(f"  - Unique pieces: {paired_df.groupby(['composer', 'composition', 'movement']).ngroups}")
 
-    print("\nGenerating Phrase-level EPR V2 data...")
-    generator = PhraseEPRGeneratorV2(
+    print("\nGenerating Phrase-level EPR data...")
+    generator = PhraseEPRGenerator(
         paired_df, args.base_dir, args.output_dir
     )
     count = generator.generate()
-    print(f"✓ Generated {count} Phrase-level EPR V2 samples")
+    print(f"✓ Generated {count} Phrase-level EPR samples")
 
     print("\n" + "=" * 60)
     print("Data generation complete!")

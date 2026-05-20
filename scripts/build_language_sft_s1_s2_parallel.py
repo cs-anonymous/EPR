@@ -517,7 +517,7 @@ def summarize(selected_rows: dict[str, list[FilteredRow]]) -> dict[str, int]:
 
 def replace_dataset(cores_root: Path, name: str, tmp_dir: Path):
     dst = cores_root / name
-    backup = cores_root / f"{name}.bak_before_rebuild"
+    backup = cores_root / f"{name}.bak_before_build"
     if backup.exists() or backup.is_symlink():
         if backup.is_dir() and not backup.is_symlink():
             shutil.rmtree(backup)

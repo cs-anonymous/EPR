@@ -475,7 +475,7 @@ def process_single_performance(score_midi, perf_midi, nak_tool_dir,
 # ============================================================================
 
 def process_asap_dataset(asap_root, nak_tool_dir, metadata_file=None,
-                         regenerate_score=False, compare_results=True, limit=None):
+                         build_score=False, compare_results=True, limit=None):
     """批量处理ASAP数据集"""
     asap_root = Path(asap_root)
 
@@ -511,7 +511,7 @@ def process_asap_dataset(asap_root, nak_tool_dir, metadata_file=None,
             perf_ann_output = asap_root / row['performance_annotations']
 
             # 如果不重新生成score annotations，且文件已存在，则跳过
-            if not regenerate_score and score_ann_output.exists():
+            if not build_score and score_ann_output.exists():
                 score_ann_output = None
 
             # 生成annotations
@@ -624,8 +624,8 @@ def main():
                        help='metadata.csv文件路径（默认为asap-root/metadata.csv）')
     parser.add_argument('--limit', type=int,
                        help='只处理前N个performance（用于测试）')
-    parser.add_argument('--regenerate-score', action='store_true',
-                       help='重新生成score annotations')
+    parser.add_argument('--build-score', action='store_true',
+                       help='生成score annotations')
     parser.add_argument('--no-compare', action='store_true',
                        help='不对比生成结果与原始数据')
 
@@ -657,7 +657,7 @@ def main():
             args.asap_root,
             args.nak_tool_dir,
             args.metadata,
-            args.regenerate_score,
+            args.build_score,
             not args.no_compare,
             args.limit
         )

@@ -1204,7 +1204,7 @@ def process_piece(
         return False
 
 
-def process_metadata_task(
+def process_metadata_task_legacy(
     task: dict,
     midi_tsv,
     refined_root: Path,
@@ -1317,7 +1317,7 @@ def process_metadata_task(
     return success_count
 
 
-def process_metadata_task_v2(
+def process_metadata_task(
     task: dict,
     midi_tsv,
     pianocore_root: Path,
@@ -1438,7 +1438,7 @@ def process_metadata_task_v2(
         output_tsv = output_piece_dir / tsv_name
 
         # Skip TSV generation if already exists and non-empty, unless the user
-        # is intentionally rebuilding after a serialization fix.
+        # is intentionally building after a serialization fix.
         if not overwrite_tsv and output_tsv.exists() and output_tsv.stat().st_size > 0:
             success_count += 1
             continue
@@ -1460,7 +1460,7 @@ _worker_output_dir = None
 _worker_abcx_root = None
 
 
-def _worker_init(refined_root, output_dir, abcx_root):
+def _worker_init_legacy(refined_root, output_dir, abcx_root):
     """Initialize worker process with required modules and paths."""
     global _worker_midi_tsv, _worker_refined_root, _worker_output_dir, _worker_abcx_root
     midi_tsv_script = Path(__file__).parent.parent / "wave-roll" / "midi_tsv.py"
@@ -1472,18 +1472,18 @@ def _worker_init(refined_root, output_dir, abcx_root):
     _worker_abcx_root = abcx_root
 
 
-def _worker_process(task):
+def _worker_process_legacy(task):
     """Worker function for metadata-driven multiprocessing."""
-    return process_metadata_task(task, _worker_midi_tsv, _worker_refined_root, _worker_abcx_root, _worker_output_dir)
+    return process_metadata_task_legacy(task, _worker_midi_tsv, _worker_refined_root, _worker_abcx_root, _worker_output_dir)
 
 
-# New worker functions for v2 (metadata-driven with refined priority)
+# Worker functions for metadata-driven processing with refined priority
 _worker_pianocore_root = None
 _worker_overwrite_tsv = False
 
 
-def _worker_init_v2(pianocore_root, output_dir, overwrite_tsv=False):
-    """Initialize worker process for v2 (metadata-driven with refined priority)."""
+def _worker_init(pianocore_root, output_dir, overwrite_tsv=False):
+    """Initialize worker process for metadata-driven processing with refined priority."""
     global _worker_midi_tsv, _worker_pianocore_root, _worker_output_dir, _worker_overwrite_tsv
     midi_tsv_script = Path(__file__).parent.parent / "wave-roll" / "midi_tsv.py"
     spec = importlib.util.spec_from_file_location("midi_tsv", midi_tsv_script)
@@ -1494,9 +1494,9 @@ def _worker_init_v2(pianocore_root, output_dir, overwrite_tsv=False):
     _worker_overwrite_tsv = overwrite_tsv
 
 
-def _worker_process_v2(task):
-    """Worker function for v2 metadata-driven multiprocessing."""
-    return process_metadata_task_v2(
+def _worker_process(task):
+    """Worker function for metadata-driven multiprocessing."""
+    return process_metadata_task(
         task,
         _worker_midi_tsv,
         _worker_pianocore_root,
@@ -1649,7 +1649,7 @@ def main() -> None:
         success_count = 0
         tsv_count = 0
         for task in tqdm(tasks):
-            n = process_metadata_task_v2(
+            n = process_metadata_task(
                 task,
                 midi_tsv,
                 pianocore_root,
@@ -1664,9 +1664,9 @@ def main() -> None:
         n_workers = min(jobs, len(tasks), cpu_count())
         init_args = (pianocore_root, output_dir, args.overwrite_tsv)
 
-        with Pool(n_workers, initializer=_worker_init_v2, initargs=init_args) as pool:
+        with Pool(n_workers, initializer=_worker_init, initargs=init_args) as pool:
             results = list(tqdm(
-                pool.imap(_worker_process_v2, tasks),
+                pool.imap(_worker_process, tasks),
                 total=len(tasks),
             ))
         success_count = sum(1 for r in results if r > 0)

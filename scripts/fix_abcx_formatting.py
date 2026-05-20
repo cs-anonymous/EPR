@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fix formatting issues in existing ABCX files by reconverting them.
+"""Fix formatting issues in existing ABCX files by normalizing them.
 
 This script reads existing ABCX files and passes them through abc_to_abcx()
 to apply the three formatting fixes:
@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "abcx" / "scripts"))
 from abc2abcx import to_standard_abcx
 
 def fix_abcx_file(abcx_path: Path) -> bool:
-    """Fix formatting in an ABCX file by reconverting it."""
+    """Fix formatting in an ABCX file by normalizing it."""
     try:
         # Read the existing ABCX file
         abcx_text = abcx_path.read_text(encoding="utf-8")

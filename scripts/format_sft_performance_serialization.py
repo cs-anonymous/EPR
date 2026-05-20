@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Reformat score/performance text fields in SPIRE SFT JSONL files.
+"""Format score/performance text fields in SPIRE SFT JSONL files.
 
-This rewrites score measure separators and performance-bearing fields to the
+This formats score measure separators and performance-bearing fields to the
 current compact formats:
 
     score measure:      M1 <ABCX content>
@@ -176,7 +176,7 @@ def batched_lines(path: Path, batch_size: int) -> Iterable[list[str]]:
         yield batch
 
 
-def reformat_file(src: Path, dst: Path, workers: int, batch_size: int) -> int:
+def format_file(src: Path, dst: Path, workers: int, batch_size: int) -> int:
     dst.parent.mkdir(parents=True, exist_ok=True)
     if src.name not in PERFORMANCE_FIELDS and src.name not in SCORE_FIELDS:
         shutil.copyfile(src, dst)
@@ -188,7 +188,7 @@ def reformat_file(src: Path, dst: Path, workers: int, batch_size: int) -> int:
             work_iter = ((src.name, batch) for batch in batched_lines(src, batch_size))
             for out_batch in tqdm(
                 pool.imap(transform_batch, work_iter, chunksize=2),
-                desc=f"Reformat {src.name}",
+                desc=f"Format {src.name}",
             ):
                 total += len(out_batch)
                 fout.writelines(out_batch)
@@ -215,7 +215,7 @@ def main() -> None:
         if not src.exists():
             continue
         dst = output_dir / file_name
-        total = reformat_file(src, dst, args.workers, args.batch_size)
+        total = format_file(src, dst, args.workers, args.batch_size)
         print(f"{file_name}: {total:,} rows")
 
     for src in input_dir.iterdir():

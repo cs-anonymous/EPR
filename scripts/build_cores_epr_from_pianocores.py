@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Rebuild CoReS EPR S1/S2 datasets from current PianoCoReS assets.
+"""Build CoReS EPR S1/S2 datasets from current PianoCoReS assets.
 
 Pipeline:
 1. Generate raw train-only measure/phrase EPR JSONL from current
-   `PianoCoReS/metadata.csv` and `PianoCoReS/aligned`.
+   `PianoCoReS/metadata.csv` and its current score/performance paths.
 2. Sample filtered S1 datasets.
 3. Sample S2 from S1.
 
@@ -30,7 +30,9 @@ EPR_TASK_TYPES = ["coldstart", "main", "ending"]
 
 def performance_piece_id(perf_tsv_path: str) -> str:
     path = str(perf_tsv_path)
-    if path.startswith("PianoCoReS/aligned/"):
+    if path.startswith("PianoCoReS/miditsv/"):
+        path = path[len("PianoCoReS/miditsv/") :]
+    elif path.startswith("PianoCoReS/aligned/"):
         path = path[len("PianoCoReS/aligned/") :]
     elif path.startswith("PianoCoRe_output/"):
         path = path[len("PianoCoRe_output/") :]
@@ -215,7 +217,7 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=1024)
     args = parser.parse_args()
 
-    temp_root = Path(tempfile.mkdtemp(prefix="rebuild_cores_epr_", dir=str(args.cores_root)))
+    temp_root = Path(tempfile.mkdtemp(prefix="build_cores_epr_", dir=str(args.cores_root)))
     try:
         train_meta = temp_root / "metadata_train.csv"
         rows = write_train_metadata(args.metadata, train_meta)
@@ -238,7 +240,7 @@ def main() -> None:
         split_epr(raw_measure, stage_root / "measure_epr_sft", "measure_epr")
         split_epr(raw_phrase, stage_root / "phrase_epr_sft", "phrase_epr")
 
-        # Re-sample S1 from full EPR using current metadata.
+        # Sample S1 from full EPR using current metadata.
         sample_cmd = [
             sys.executable,
             str(ROOT / "scripts" / "build_epr_sample_datasets.py"),

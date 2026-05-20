@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rebalance phrase EPR S1/S2 datasets toward smaller token budgets.
+"""Balance phrase EPR S1/S2 datasets toward smaller token budgets.
 
 Policy:
 1. Keep all coldstart / ending rows unchanged.
@@ -184,7 +184,7 @@ def sample_by_piece_token_budget(samples: list[Sample], target_tokens: int, seed
     return selected
 
 
-def rebalance_s1_main_non_asap(
+def balance_s1_main_non_asap(
     samples: list[Sample],
     target_tokens: int,
     keep_sources: set[str],
@@ -201,7 +201,7 @@ def rebalance_s1_main_non_asap(
     return kept + selected_rest
 
 
-def rebalance_s2_main_non_asap(
+def balance_s2_main_non_asap(
     s1_non_asap: list[Sample],
     keep_sources: set[str],
     target_tokens: int,
@@ -264,7 +264,7 @@ def main() -> None:
 
     fixed_s1_tokens = total_tokens(s1_cold) + total_tokens(s1_end) + total_tokens(s1_main_asap)
     target_s1_non_asap_tokens = max(0, args.s1_target_tokens - fixed_s1_tokens)
-    new_s1_main_non_asap = rebalance_s1_main_non_asap(
+    new_s1_main_non_asap = balance_s1_main_non_asap(
         s1_main_non_asap,
         target_s1_non_asap_tokens,
         keep_sources=keep_sources,
@@ -279,7 +279,7 @@ def main() -> None:
     s2_end = load_samples(s2_dir / "phrase_epr_ending.jsonl", tokenizer, asap_ids, piece_to_source, args.batch_size)
     fixed_s2_target_tokens = total_tokens(s2_cold) + total_tokens(s2_end) + total_tokens(s1_main_asap)
     target_s2_non_asap_tokens = max(0, args.s2_target_tokens - fixed_s2_target_tokens)
-    new_s2_main_non_asap = rebalance_s2_main_non_asap(
+    new_s2_main_non_asap = balance_s2_main_non_asap(
         new_s1_main_non_asap,
         keep_sources=keep_sources,
         target_tokens=target_s2_non_asap_tokens,
@@ -296,7 +296,7 @@ def main() -> None:
     print(f"New S1 total tokens: {new_s1_total:,}")
     print(f"New S2 total tokens: {new_s2_total:,}")
 
-    tmp_root = Path(tempfile.mkdtemp(prefix="phrase_rebalance_", dir=str(args.cores_root.parent)))
+    tmp_root = Path(tempfile.mkdtemp(prefix="phrase_balance_", dir=str(args.cores_root.parent)))
     try:
         tmp_s1 = tmp_root / "phrase_epr_sft_s1"
         tmp_s2 = tmp_root / "phrase_epr_sft_s2"
@@ -319,8 +319,8 @@ def main() -> None:
             "phrase_epr_main.jsonl": total_rows(new_s2_main),
         })
 
-        backup_s1 = args.cores_root / "phrase_epr_sft_s1.bak_before_rebalance"
-        backup_s2 = args.cores_root / "phrase_epr_sft_s2.bak_before_rebalance"
+        backup_s1 = args.cores_root / "phrase_epr_sft_s1.bak_before_balance"
+        backup_s2 = args.cores_root / "phrase_epr_sft_s2.bak_before_balance"
         if backup_s1.exists():
             shutil.rmtree(backup_s1)
         if backup_s2.exists():
@@ -339,7 +339,7 @@ def main() -> None:
             "s1_main_non_asap_by_source": source_summary(new_s1_main_non_asap),
             "s2_main_non_asap_by_source": source_summary(new_s2_main_non_asap),
         }
-        (args.cores_root / "phrase_epr_rebalance_summary.json").write_text(
+        (args.cores_root / "phrase_epr_balance_summary.json").write_text(
             json.dumps(summary, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )

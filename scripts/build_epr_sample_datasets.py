@@ -3,7 +3,7 @@
 
 Sampling policy:
   1. Token-filter measure EPR with max_token=1024 and phrase EPR with
-     V2 compact context max_token=2560.
+     compact phrase context max_token=2560.
   2. Keep all filtered coldstart and ending samples.
   3. For main samples, keep all filtered ASAP samples. For the remaining
      non-ASAP samples, sample about 1/5 with at least one sample per
@@ -60,7 +60,9 @@ def stable_seed(seed: int, *parts: str) -> int:
 
 def performance_piece_id(perf_tsv_path: str) -> str:
     path = str(perf_tsv_path)
-    if path.startswith("PianoCoReS/aligned/"):
+    if path.startswith("PianoCoReS/miditsv/"):
+        path = path[len("PianoCoReS/miditsv/"):]
+    elif path.startswith("PianoCoReS/aligned/"):
         path = path[len("PianoCoReS/aligned/"):]
     elif path.startswith("PianoCoRe_output/"):
         path = path[len("PianoCoRe_output/"):]
@@ -133,7 +135,7 @@ def _last_measure(lines: list[str]) -> str:
 
 
 def compact_phrase_epr_context(record: dict) -> dict:
-    """Apply phrase EPR V2 context: M_prev + H_k + M_next, phi_M_prev."""
+    """Apply phrase EPR compact context: M_prev + H_k + M_next, phi_M_prev."""
     if record.get("task") != "phrase_epr":
         return record
 
@@ -155,7 +157,7 @@ def compact_phrase_epr_context(record: dict) -> dict:
         out["score_snip"] = "\n".join(score_lines)
 
     out["perf_context"] = _last_measure(str(record.get("perf_context", "")).splitlines())
-    out["context_design"] = "phrase_epr_v2_prev_measure"
+    out["context_design"] = "phrase_epr_compact_prev_measure"
     return out
 
 

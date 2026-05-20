@@ -598,7 +598,7 @@ def write_stats(out_root: Path, stats: list[dict]) -> None:
         "",
         "Detailed per-file statistics are in `stats.csv`.",
         "",
-        "Language SFT is not regenerated here; it reuses the existing S1 dataset.",
+        "Language SFT is not built here; it uses the existing S1 dataset.",
     ])
     readme.write_text("\n".join(lines) + "\n", encoding="utf-8")
 

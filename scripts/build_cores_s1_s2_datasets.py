@@ -12,7 +12,7 @@ Requirements:
 
 Uses:
 - measure_epr: existing design with max_length=2048
-- phrase_epr: V2 design with max_length=2560
+- phrase_epr: compact design with max_length=2560
 """
 
 import argparse
@@ -54,7 +54,11 @@ def stable_seed(seed: int, *parts: str) -> int:
 
 def performance_piece_id(perf_tsv_path: str) -> str:
     path = str(perf_tsv_path)
-    if path.startswith("PianoCoRe_output/"):
+    if path.startswith("PianoCoReS/miditsv/"):
+        path = path[len("PianoCoReS/miditsv/"):]
+    elif path.startswith("PianoCoReS/aligned/"):
+        path = path[len("PianoCoReS/aligned/"):]
+    elif path.startswith("PianoCoRe_output/"):
         path = path[len("PianoCoRe_output/"):]
     elif path.startswith("PianoCoRe/aligned/"):
         path = path[len("PianoCoRe/aligned/"):]
@@ -134,7 +138,7 @@ def _last_measure(lines: list[str]) -> str:
 
 
 def compact_phrase_epr_context(record: dict) -> dict:
-    """Apply phrase EPR V2 context: M_prev + H_k + M_next, phi_M_prev."""
+    """Apply phrase EPR compact context: M_prev + H_k + M_next, phi_M_prev."""
     if record.get("task") != "phrase_epr":
         return record
 
@@ -156,7 +160,7 @@ def compact_phrase_epr_context(record: dict) -> dict:
         out["score_snip"] = "\n".join(score_lines)
 
     out["perf_context"] = _last_measure(str(record.get("perf_context", "")).splitlines())
-    out["context_design"] = "phrase_epr_v2_prev_measure"
+    out["context_design"] = "phrase_epr_compact_prev_measure"
     return out
 
 
@@ -498,7 +502,7 @@ def main():
     parser.add_argument("--measure-max-token", type=int, default=2048,
                         help="Maximum token length for measure EPR samples")
     parser.add_argument("--phrase-max-token", type=int, default=2560,
-                        help="Maximum token length for V2 phrase EPR samples")
+                        help="Maximum token length for compact phrase EPR samples")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed")
     parser.add_argument("--batch-size", type=int, default=512,
