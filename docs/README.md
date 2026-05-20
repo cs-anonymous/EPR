@@ -2,6 +2,10 @@
 
 > 基于乐谱结构的切割方案，输出 JSON 格式，适合构建 fine-grained EPR 数据集
 
+## Related docs
+
+- [Language CPT Training Notes](./CPT_LANGUAGE_TRAINING.md): language CPT 的当前默认配置，以及 `flash_attn` / `packing` 的测速结论
+
 ## 数据结构
 
 **核心设计**：

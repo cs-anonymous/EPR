@@ -22,7 +22,9 @@ from tqdm import tqdm
 def performance_piece_id(perf_tsv_path: str) -> str:
     """Convert metadata performance_tsv_path to the JSONL piece_id format."""
     path = str(perf_tsv_path)
-    if path.startswith('PianoCoRe_output/'):
+    if path.startswith('PianoCoReS/aligned/'):
+        path = path[len('PianoCoReS/aligned/'):]
+    elif path.startswith('PianoCoRe_output/'):
         path = path[len('PianoCoRe_output/'):]
     elif path.startswith('PianoCoRe/aligned/'):
         path = path[len('PianoCoRe/aligned/'):]
@@ -357,6 +359,8 @@ class MeasureEPRGenerator:
                 composition_path = relative_path.replace('/score.abcx', '')
                 # 构建 aligned 路径
                 aligned_path = f'PianoCoRe/aligned/{composition_path}/score_aligned.abcx'
+            elif score_abcx_path.startswith('PianoCoReS/aligned/'):
+                aligned_path = score_abcx_path.replace('/score.abcx', '/score_aligned.abcx')
             else:
                 aligned_path = score_abcx_path
 
@@ -377,6 +381,8 @@ class MeasureEPRGenerator:
                 if perf_tsv_path.startswith('PianoCoRe_output/'):
                     perf_relative = perf_tsv_path.replace('PianoCoRe_output/', '')
                     aligned_tsv_path = f'PianoCoRe/aligned/{perf_relative}'
+                elif perf_tsv_path.startswith('PianoCoReS/aligned/'):
+                    aligned_tsv_path = perf_tsv_path
                 else:
                     aligned_tsv_path = perf_tsv_path
 
@@ -488,6 +494,8 @@ class PhraseEPRGenerator:
                 relative_path = score_abcx_path.replace('PianoCoRe/score/', '')
                 composition_path = relative_path.replace('/score.abcx', '')
                 aligned_path = f'PianoCoRe/aligned/{composition_path}/score_aligned.abcx'
+            elif score_abcx_path.startswith('PianoCoReS/aligned/'):
+                aligned_path = score_abcx_path.replace('/score.abcx', '/score_aligned.abcx')
             else:
                 aligned_path = score_abcx_path
 
@@ -506,6 +514,8 @@ class PhraseEPRGenerator:
                 if perf_tsv_path.startswith('PianoCoRe_output/'):
                     perf_relative = perf_tsv_path.replace('PianoCoRe_output/', '')
                     aligned_tsv_path = f'PianoCoRe/aligned/{perf_relative}'
+                elif perf_tsv_path.startswith('PianoCoReS/aligned/'):
+                    aligned_tsv_path = perf_tsv_path
                 else:
                     aligned_tsv_path = perf_tsv_path
 

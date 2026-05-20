@@ -24,6 +24,7 @@ from tqdm import tqdm
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from aligned_abcx_format import AlignedAbcxError, build_aligned_abcx
+from lm_midi_tsv import midi_pitch_to_logic_note
 
 
 @dataclass
@@ -864,78 +865,24 @@ def write_aligned_abcx(
         f.write(text)
     return True
 
-
-# ABC pitch spelling helpers
-# Map MIDI pitch class to natural note names
-NATURAL_NAMES = {0: "C", 2: "D", 4: "E", 5: "F", 7: "G", 9: "A", 11: "B"}
-NATURAL_TO_PC = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
-
-# Common key signatures with their accidental spellings
-KEY_ACCIDENTALS: dict[str, dict[int, str]] = {
-    "C":  {},
-    "G":  {1: "^F"},
-    "D":  {1: "^C", 6: "^F"},
-    "A":  {1: "^C", 3: "^G", 6: "^F"},
-    "E":  {1: "^C", 3: "^G", 5: "^D", 6: "^F"},
-    "B":  {1: "^C", 3: "^G", 5: "^D", 6: "^F", 10: "^B"},
-    "F#": {1: "^C", 3: "^G", 5: "^D", 6: "^F", 8: "^E", 10: "^B"},
-    "F":  {10: "_B"},
-    "Bb": {3: "_E", 10: "_B"},
-    "Eb": {3: "_E", 6: "_A", 10: "_B"},
-    "Ab": {1: "_D", 3: "_E", 6: "_A", 8: "_G", 10: "_B"},
-    "Db": {1: "_D", 3: "_E", 6: "_A", 8: "_G", 10: "_B"},
-    "Gb": {1: "_D", 3: "_E", 5: "_C", 6: "_A", 8: "_G", 10: "_B"},
-}
-
-MAJOR_SCALES = {k: set(range(12)) - set(v.keys()) for k, v in KEY_ACCIDENTALS.items()}
-
-
-def midi_pitch_to_abc(pitch: int, key: str = "C") -> str:
-    """Convert MIDI pitch to ABC notation using key-aware spelling."""
-    pitch_class = pitch % 12
-    octave = pitch // 12 - 5
-
-    if pitch_class in KEY_ACCIDENTALS.get(key, {}):
-        spelled = KEY_ACCIDENTALS[key][pitch_class]
-    else:
-        spelled = NATURAL_NAMES.get(pitch_class, "C")
-
-    # Add octave markers
-    if octave > 0:
-        note = spelled.lower() + "'" * (octave - 1)
-    elif octave < 0:
-        note = spelled + "," * (-octave)
-    else:
-        note = spelled if spelled[0].isupper() else spelled
-
-    return note
-
-
-def detect_key_from_notes(notes: list[dict]) -> str:
-    """Detect key signature from a set of notes."""
-    pitch_classes = {n["pitch"] % 12 for n in notes}
-    best_key, best_score = "C", 0
-    for key, scale in MAJOR_SCALES.items():
-        score = len(pitch_classes & scale)
-        if score > best_score:
-            best_key = key
-            best_score = score
-    return best_key
-
-
 def generate_performance_tsv_with_phrases(
     perf_midi_path: Path,
     perf_entries: list[tuple[int | None, str, int, int]],
     output_tsv: Path,
     midi_tsv,
-    midi_to_abcx: dict[int, int],
 ) -> bool:
-    """Generate MIDI-TSV v0.2 format TSV with ABCX measure and phrase markers.
+    """Generate LM-MIDI TSV v0.3 with fixed 4-column event rows.
 
     perf_entries: list of (mnum|None, phrase_id, start_tick, end_tick)
     - (None, phrase_id, start, end) → phrase header
     - (mnum, phrase_id, start, end) → measure entry
     All times are already in integer ticks (100 ticks = 1 second).
+
+    TSV columns are:
+        event, value, duration, offset
+
+    Note events use Logic Pro note names (MIDI 60 = C3).  Durations and
+    offsets are 10 ms bins.  Structural and pedal PAD slots are written as 0.
     """
     perf_midi = pretty_midi.PrettyMIDI(str(perf_midi_path))
 
@@ -960,17 +907,17 @@ def generate_performance_tsv_with_phrases(
             if cc.number == 64:
                 all_pedals.append({"t": cc.time, "val": cc.value})
 
-    piece_key = detect_key_from_notes(all_notes)
-
     lines = [
-        "# midi-tsv v0.2",
+        "# midi-tsv v0.3",
         f"# source={perf_midi_path.name}",
-        "# unit=tick",
-        "# tick_scale=1",
-        "# tpq=50",
-        "# tick_ms=10",
-        "# pitch=abc-absolute",
-        f"# detected_key={piece_key}",
+        "# unit=bin",
+        "# bin_ms=10",
+        "# columns=event\tvalue\tduration\toffset",
+        "# pitch=logic-pro-note",
+        "# middle_c=C3",
+        "# slot_pad=0",
+        "# note_offset=previous_note_onset",
+        "# pedal_offset=most_recent_note_onset",
         "# slice_type=measure",
     ]
 
@@ -997,62 +944,53 @@ def generate_performance_tsv_with_phrases(
         pedal_dicts, note_dicts, measure_bounds
     )
 
-    # Build lookup: pedal tick → value
-    pedal_by_tick = {}
-    for p in quantized_pedals:
-        pedal_by_tick[p["t"]] = p["val"]
-
     # Iterate through entries: phrase headers and measure entries are already ordered
+    phrase_index = -1
+    measure_local_index = 0
+    last_note_tick: int | None = None
+
     for mnum_or_none, phrase_id, start_tick, end_tick in perf_entries:
         if mnum_or_none is None:
-            # Phrase header
-            lines.append(f"{phrase_id}\t{start_tick}\t{end_tick}")
+            phrase_index += 1
+            measure_local_index = 0
+            lines.append(f"H\t{phrase_index}\t{max(0, end_tick - start_tick)}\t0")
             continue
-
-        # Measure entry — convert MIDI measure number to ABCX number
-        abcx_num = midi_to_abcx.get(mnum_or_none, mnum_or_none)
 
         m_start_s = start_tick * 0.01
         m_end_s = end_tick * 0.01
 
         # Find notes in this measure
-        m_notes = []
+        events = []
         for n in all_notes:
             if m_start_s <= n["start"] < m_end_s:
                 abs_start_tick = round(n["start"] * 100)
-                rel_tick = abs_start_tick - start_tick
                 dur_tick = round(n["dur"] * 100)
-                m_notes.append((rel_tick, dur_tick, n["pitch"], n["vel"]))
-        m_notes.sort(key=lambda x: x[0])
+                events.append((abs_start_tick, 0, n["pitch"], dur_tick, n["vel"]))
 
         # Find quantized pedals in this measure
-        m_pedals = []
-        for p_tick, p_val in pedal_by_tick.items():
+        for p in quantized_pedals:
+            p_tick = int(p["t"])
             if start_tick <= p_tick < end_tick:
-                rel_tick = p_tick - start_tick
-                m_pedals.append((rel_tick, p_val))
-        m_pedals.sort(key=lambda x: x[0])
+                events.append((p_tick, 1, None, 0, p["val"]))
 
-        # Detect measure key
-        m_key = detect_key_from_notes([{"pitch": n[2]} for n in m_notes]) if m_notes else piece_key
+        # Structural rows do not affect note-offset reference.
+        lines.append(f"M\t{measure_local_index}\t{max(0, end_tick - start_tick)}\t0")
+        measure_local_index += 1
 
-        # Write measure marker
-        lines.append(f"M{abcx_num}\t{start_tick}\t{end_tick}")
+        # Notes establish the timing anchor.  Pedals at the same timestamp are
+        # emitted after notes so they can attach to that note onset.
+        events.sort(key=lambda e: (e[0], e[1], e[2] if e[2] is not None else 128))
 
-        # Merge pedals and notes by timestamp for interleaved output
-        events = []
-        for rel_tick, val in m_pedals:
-            events.append((rel_tick, "P", rel_tick, val))
-        for rel_tick, dur_tick, pitch, vel in m_notes:
-            pitch_abc = midi_pitch_to_abc(pitch, m_key)
-            events.append((rel_tick, "N", pitch_abc, dur_tick, vel))
-        events.sort(key=lambda e: e[0])
-
-        for evt in events:
-            if evt[1] == "P":
-                lines.append(f"P\t{evt[2]}\t{evt[3]}")
+        for abs_tick, kind, pitch, duration, value in events:
+            if kind == 0:
+                note_offset = 0 if last_note_tick is None else max(0, abs_tick - last_note_tick)
+                last_note_tick = abs_tick
+                lines.append(
+                    f"{midi_pitch_to_logic_note(int(pitch))}\t{int(value)}\t{int(duration)}\t{note_offset}"
+                )
             else:
-                lines.append(f"{evt[2]}:{evt[3]}\t{evt[0]}\t{evt[4]}")
+                pedal_offset = 0 if last_note_tick is None else max(0, abs_tick - last_note_tick)
+                lines.append(f"P\t{int(value)}\t0\t{pedal_offset}")
 
     output_tsv.parent.mkdir(parents=True, exist_ok=True)
     with open(output_tsv, "w", encoding="utf-8") as f:
@@ -1174,7 +1112,12 @@ def _process_score_midi(
             tsv_name = perf_midi_name + ".tsv"
 
         output_tsv = output_piece_dir / tsv_name
-        if generate_performance_tsv_with_phrases(perf_midi, perf_measures, output_tsv, midi_tsv, struct.midi_to_abcx):
+        if generate_performance_tsv_with_phrases(
+            perf_midi,
+            perf_measures,
+            output_tsv,
+            midi_tsv,
+        ):
             success_count += 1
 
     return success_count
@@ -1351,7 +1294,10 @@ def process_metadata_task(
         output_tsv = output_piece_dir / tsv_name
 
         if generate_performance_tsv_with_phrases(
-            perf_midi, perf_measures, output_tsv, midi_tsv, score_structure.midi_to_abcx
+            perf_midi,
+            perf_measures,
+            output_tsv,
+            midi_tsv,
         ):
             success_count += 1
 
@@ -1363,6 +1309,7 @@ def process_metadata_task_v2(
     midi_tsv,
     pianocore_root: Path,
     output_dir: Path,
+    overwrite_tsv: bool = False,
 ) -> int:
     """Process one score file + its performances, driven by metadata with refined priority.
 
@@ -1381,12 +1328,13 @@ def process_metadata_task_v2(
     """
     import shutil
 
-    # Metadata paths for refined files need 'refined/' prefix
+    # Metadata paths for refined files live under `refined/`, while the
+    # non-refined assets used by legacy ASAP rows live under `raw/`.
     score_path = task['score_path']
     if '_refined' in score_path or '_mini' in score_path:
         score_midi = pianocore_root / 'refined' / score_path
     else:
-        score_midi = pianocore_root / score_path
+        score_midi = pianocore_root / 'raw' / score_path
 
     abcx_path = Path(task['abcx_path'])
     piece_rel = task['piece_path']
@@ -1407,7 +1355,7 @@ def process_metadata_task_v2(
     if '_refined' in raw_score_path or '_mini' in raw_score_path:
         raw_score_midi = pianocore_root / 'refined' / raw_score_path
     else:
-        raw_score_midi = pianocore_root / raw_score_path
+        raw_score_midi = pianocore_root / 'raw' / raw_score_path
     mapping_source = raw_score_midi if raw_score_midi.exists() else score_midi
     midi_to_abcx = build_midi_to_abcx_mapping(score_measures, abcx_measures, mapping_source)
 
@@ -1458,13 +1406,14 @@ def process_metadata_task_v2(
     # Process each performance
     success_count = 0
     for perf_midi_rel, align_rel in task['performances']:
-        # Metadata paths for refined files need 'refined/' prefix
+        # Metadata paths for refined files live under `refined/`, while the
+        # non-refined assets used by legacy ASAP rows live under `raw/`.
         if '_refined' in perf_midi_rel or '_mini' in perf_midi_rel:
             perf_midi = pianocore_root / 'refined' / perf_midi_rel
             align_file = pianocore_root / 'refined' / align_rel
         else:
-            perf_midi = pianocore_root / perf_midi_rel
-            align_file = pianocore_root / align_rel
+            perf_midi = pianocore_root / 'raw' / perf_midi_rel
+            align_file = pianocore_root / 'raw' / align_rel
 
         if not perf_midi.exists() or not align_file.exists():
             continue
@@ -1475,13 +1424,17 @@ def process_metadata_task_v2(
         tsv_name = Path(perf_midi_rel).name + ".tsv"
         output_tsv = output_piece_dir / tsv_name
 
-        # Skip TSV generation if already exists and non-empty
-        if output_tsv.exists() and output_tsv.stat().st_size > 0:
+        # Skip TSV generation if already exists and non-empty, unless the user
+        # is intentionally rebuilding after a serialization fix.
+        if not overwrite_tsv and output_tsv.exists() and output_tsv.stat().st_size > 0:
             success_count += 1
             continue
 
         if generate_performance_tsv_with_phrases(
-            perf_midi, perf_measures, output_tsv, midi_tsv, score_structure.midi_to_abcx
+            perf_midi,
+            perf_measures,
+            output_tsv,
+            midi_tsv,
         ):
             success_count += 1
 
@@ -1513,22 +1466,30 @@ def _worker_process(task):
 
 # New worker functions for v2 (metadata-driven with refined priority)
 _worker_pianocore_root = None
+_worker_overwrite_tsv = False
 
 
-def _worker_init_v2(pianocore_root, output_dir):
+def _worker_init_v2(pianocore_root, output_dir, overwrite_tsv=False):
     """Initialize worker process for v2 (metadata-driven with refined priority)."""
-    global _worker_midi_tsv, _worker_pianocore_root, _worker_output_dir
+    global _worker_midi_tsv, _worker_pianocore_root, _worker_output_dir, _worker_overwrite_tsv
     midi_tsv_script = Path(__file__).parent.parent / "wave-roll" / "midi_tsv.py"
     spec = importlib.util.spec_from_file_location("midi_tsv", midi_tsv_script)
     _worker_midi_tsv = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(_worker_midi_tsv)
     _worker_pianocore_root = pianocore_root
     _worker_output_dir = output_dir
+    _worker_overwrite_tsv = overwrite_tsv
 
 
 def _worker_process_v2(task):
     """Worker function for v2 metadata-driven multiprocessing."""
-    return process_metadata_task_v2(task, _worker_midi_tsv, _worker_pianocore_root, _worker_output_dir)
+    return process_metadata_task_v2(
+        task,
+        _worker_midi_tsv,
+        _worker_pianocore_root,
+        _worker_output_dir,
+        overwrite_tsv=_worker_overwrite_tsv,
+    )
 
 
 def main() -> None:
@@ -1572,6 +1533,11 @@ def main() -> None:
         type=int,
         default=16,
         help="Number of parallel workers (default: 16, use 0 for CPU count)",
+    )
+    parser.add_argument(
+        "--overwrite-tsv",
+        action="store_true",
+        help="Regenerate TSV files even when the output path already exists",
     )
     args = parser.parse_args()
 
@@ -1670,14 +1636,20 @@ def main() -> None:
         success_count = 0
         tsv_count = 0
         for task in tqdm(tasks):
-            n = process_metadata_task_v2(task, midi_tsv, pianocore_root, output_dir)
+            n = process_metadata_task_v2(
+                task,
+                midi_tsv,
+                pianocore_root,
+                output_dir,
+                overwrite_tsv=args.overwrite_tsv,
+            )
             success_count += 1 if n > 0 else 0
             tsv_count += n
     else:
         from multiprocessing import Pool, cpu_count
 
         n_workers = min(jobs, len(tasks), cpu_count())
-        init_args = (pianocore_root, output_dir)
+        init_args = (pianocore_root, output_dir, args.overwrite_tsv)
 
         with Pool(n_workers, initializer=_worker_init_v2, initargs=init_args) as pool:
             results = list(tqdm(

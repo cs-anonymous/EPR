@@ -45,6 +45,17 @@ def _csv_float(value, default: float = 0.0) -> float:
         return default
 
 
+def path_piece_id(path_like, anchor_names=('aligned', 'orphan_abcx', 'orphan_tsv')):
+    """Return a stable relative piece_id from an absolute or relative dataset path."""
+    path = Path(str(path_like))
+    parts = path.parts
+    for anchor in anchor_names:
+        if anchor in parts:
+            idx = parts.index(anchor)
+            return Path(*parts[idx + 1:]).with_suffix('').as_posix()
+    return path.with_suffix('').as_posix()
+
+
 def load_valid_ids_and_abcx_paths(metadata_path: str = 'PianoCoRe/metadata.csv',
                                    perf_tier: str = 'b',
                                    perf_filter: str = None):
@@ -224,9 +235,19 @@ class TSVParser:
             elif line.startswith('M'):
                 # M 行格式: M1\t<start>\t<end>  或  M1:<duration>
                 if ':' in line:
-                    parts = line.split(':', 1)
-                    current_measure = parts[0]
-                    measure_durations[current_measure] = parts[1] if len(parts) > 1 else ''
+                    first, rest = line.split(':', 1)
+                    current_measure = first
+                    # Compact v0.2 format:
+                    #   M1:117 <event> <event> ...
+                    # Legacy compact/partial:
+                    #   M1:117
+                    rest_parts = rest.strip().split()
+                    if rest_parts:
+                        measure_durations[current_measure] = rest_parts[0]
+                        if len(rest_parts) > 1:
+                            measures[current_measure].extend(rest_parts[1:])
+                    else:
+                        measure_durations[current_measure] = ''
                 elif '\t' in line:
                     # M1\t<start>\t<end> → duration = end - start
                     parts = line.split('\t')
@@ -625,7 +646,7 @@ class MeasureScoreLangGenerator:
             if not score_data['measures']:
                 continue
 
-            piece_id = abcx_path.relative_to(abcx_path.parents[-3]).with_suffix('').as_posix()
+            piece_id = path_piece_id(abcx_path, anchor_names=('aligned', 'orphan_abcx'))
 
             measure_ids = sorted(score_data['measures'].keys(),
                                 key=lambda x: int(x[1:]))
@@ -762,7 +783,7 @@ class PhraseScoreLangGenerator:
             if not score_data['phrases']:
                 continue
 
-            piece_id = abcx_path.relative_to(abcx_path.parents[-3]).with_suffix('').as_posix()
+            piece_id = path_piece_id(abcx_path, anchor_names=('aligned', 'orphan_abcx'))
 
             phrase_ids = sorted(score_data['phrases'].keys(),
                                key=lambda x: int(x[1:]))
@@ -887,7 +908,7 @@ class MeasurePerfLangGenerator:
             if not perf_data['measures']:
                 continue
 
-            piece_id = tsv_path.relative_to(tsv_path.parents[-3]).with_suffix('').as_posix()
+            piece_id = path_piece_id(tsv_path, anchor_names=('aligned', 'orphan_tsv'))
 
             measure_ids = sorted(perf_data['measures'].keys(),
                                 key=lambda x: int(x[1:]))
@@ -999,7 +1020,7 @@ class PhrasePerfLangGenerator:
             if not perf_data['phrases']:
                 continue
 
-            piece_id = tsv_path.relative_to(tsv_path.parents[-3]).with_suffix('').as_posix()
+            piece_id = path_piece_id(tsv_path, anchor_names=('aligned', 'orphan_tsv'))
 
             phrase_ids = sorted(perf_data['phrases'].keys(),
                                key=lambda x: int(x[1:]))

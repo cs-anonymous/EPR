@@ -13,3 +13,5 @@ Qwen3.5-4B
 sft_data
 *.log
 PianistTransformer
+__pycache__
+miditsv
