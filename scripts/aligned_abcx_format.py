@@ -225,7 +225,7 @@ def build_aligned_abcx(
         out_lines.append(score_phrase_label(phrase_index))
         for measure_local_index, measure_num in enumerate(phrase_measures):
             content = measure_map.get(measure_num, ". ; .")
-            out_lines.append(f"{score_measure_label(measure_local_index)}\t{content}")
+            out_lines.append(f"{score_measure_label(measure_local_index)}{content}")
         if has_linebreak:
             out_lines.append("$")
     return "\n".join(out_lines) + "\n"
@@ -248,7 +248,7 @@ def build_orphan_aligned_abcx(
         out_lines.append(score_phrase_label(phrase_index))
         for measure_local_index, content in enumerate(raw_measures[i:i + phrase_size]):
             out_lines.append(
-                f"{score_measure_label(measure_local_index)}\t{simplify_measure_content(content, layout)}"
+                f"{score_measure_label(measure_local_index)}{simplify_measure_content(content, layout)}"
             )
         phrase_index += 1
     return "\n".join(out_lines) + "\n"

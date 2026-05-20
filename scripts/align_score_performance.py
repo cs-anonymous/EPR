@@ -116,7 +116,10 @@ def _parse_abcx_measures(abcx_path: Path) -> list[dict]:
     if body_start is None:
         return []
 
-    body_text = " ".join(lines[body_start:])
+    body_text = " ".join(
+        line for line in lines[body_start:]
+        if line.strip() and not line.strip().startswith(("%%", "V:", "w:"))
+    )
 
     # Split by `|` first
     segments = [s.strip() for s in body_text.split("|") if s.strip()]
@@ -884,6 +887,10 @@ def generate_performance_tsv_with_phrases(
     Note events use Logic Pro note names (MIDI 60 = C3).  Durations and
     offsets are 10 ms bins.  Structural and pedal PAD slots are written as 0.
     """
+    def structural_row(event: str, value: int, duration: int) -> str:
+        duration = max(0, min(65535, int(duration)))
+        return f"{event}\t{value}\t{duration // 256}\t{duration % 256}"
+
     perf_midi = pretty_midi.PrettyMIDI(str(perf_midi_path))
 
     all_notes = []
@@ -954,8 +961,7 @@ def generate_performance_tsv_with_phrases(
         if mnum_or_none is None:
             phrase_index += 1
             measure_local_index = 0
-            for row in semantic_event_to_tsv_rows("H", phrase_index, max(0, end_tick - start_tick), 0):
-                lines.append(tsv_row_to_line(row))
+            lines.append(structural_row("H", phrase_index, end_tick - start_tick))
             continue
 
         m_start_s = start_tick * 0.01
@@ -976,8 +982,7 @@ def generate_performance_tsv_with_phrases(
                 events.append((p_tick, 1, None, 0, p["val"]))
 
         # Structural rows do not affect note-offset reference.
-        for row in semantic_event_to_tsv_rows("M", measure_local_index, max(0, end_tick - start_tick), 0):
-            lines.append(tsv_row_to_line(row))
+        lines.append(structural_row("M", measure_local_index, end_tick - start_tick))
         measure_local_index += 1
 
         # Notes establish the timing anchor.  Pedals at the same timestamp are

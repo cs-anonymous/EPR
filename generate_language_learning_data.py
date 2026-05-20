@@ -205,10 +205,10 @@ def _parse_score_phrase_token(line: str) -> int | None:
 
 def _parse_score_measure_token(line: str) -> int | None:
     stripped = line.strip()
-    token = stripped.split('\t', 1)[0]
-    match = re.fullmatch(r"<M><V(\d{3})>", token)
+    match = re.match(r"^<M><V(\d{3})>", stripped)
     if match:
         return int(match.group(1))
+    token = stripped.split('\t', 1)[0].split(' ', 1)[0]
     if token.startswith('M') and token[1:].isdigit():
         return int(token[1:])
     return None
@@ -394,7 +394,7 @@ def format_score_measure(measure_id: str, content: str, display_id: str | None =
     if label is None:
         idx = int(measure_id[1:]) - 1
         label = f"<M><V{idx:03d}>"
-    return f"{label}\t{content}"
+    return f"{label}{content}"
 
 
 def format_score_phrase(phrase_id: str, measure_lines: List[str], display_id: str | None = None) -> str:

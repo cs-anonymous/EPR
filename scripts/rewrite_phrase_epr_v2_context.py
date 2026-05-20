@@ -30,7 +30,7 @@ COUNT_FIELDS = ["instruction", "score_header", "score_snip", "perf_context", "pe
 PHRASE_RE = re.compile(r"^(H\d+)(?::\d+)?\s*$")
 TOKEN_PHRASE_RE = re.compile(r"^<H><V(\d{3})>\s*$")
 MEASURE_RE = re.compile(r"^M\d+(?::|\s|\t|$)")
-TOKEN_MEASURE_RE = re.compile(r"^<M><V\d{3}>(?:\t|$)")
+TOKEN_MEASURE_RE = re.compile(r"^<M><V\d{3}>(?:\t|\s|[A-Ga-gz\[\]!\"_^=.])")
 
 
 def elapsed(start: float) -> str:

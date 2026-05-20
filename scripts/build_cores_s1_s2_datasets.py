@@ -96,7 +96,7 @@ def _is_phrase_header(line: str) -> bool:
 
 def _is_measure_line(line: str) -> bool:
     stripped = line.strip()
-    return bool(re.match(r"^<M><V\d{3}>(?:\t|$)", stripped)) or (
+    return bool(re.match(r"^<M><V\d{3}>(?:\t|\s|[A-Ga-gz\[\]!\"_^=.])", stripped)) or (
         stripped.startswith("M") and len(stripped) > 1 and stripped[1].isdigit()
     )
 
