@@ -21,7 +21,7 @@ class ScoreLayout:
 
 
 def score_phrase_label(phrase_index: int) -> str:
-    return f"<H><V{phrase_index:03d}>"
+    return f"<H><V{phrase_index % 128:03d}>"
 
 
 def score_measure_label(measure_local_index: int) -> str:
@@ -152,19 +152,80 @@ def parse_body_measures(lines: list[str]) -> list[str]:
         stripped = line.strip()
         if not stripped or stripped.startswith(("V:", "w:")):
             continue
-        body_lines.append(stripped)
+        body_lines.append(_strip_abc_comment(stripped).strip())
 
     body_text = " ".join(body_lines)
     measures: list[str] = []
-    for segment in body_text.split("|"):
+    for segment in _split_body_bars(body_text):
         segment = segment.strip()
         if not segment:
             continue
-        for part in segment.split("::"):
-            cleaned = clean_measure_markers(part)
-            if cleaned:
-                measures.append(cleaned)
+        cleaned = clean_measure_markers(segment)
+        if cleaned:
+            measures.append(cleaned)
     return measures
+
+
+def _strip_abc_comment(line: str) -> str:
+    """Strip a `%` comment marker outside quoted ABC annotations."""
+    in_quote = False
+    for index, char in enumerate(line):
+        if char == '"':
+            in_quote = not in_quote
+        elif char == "%" and not in_quote:
+            return line[:index]
+    return line
+
+
+def _split_body_bars(body_text: str) -> list[str]:
+    """Split body text on real ABCX bar lines, not annotated `|` text."""
+    segments: list[str] = []
+    current: list[str] = []
+    in_quote = False
+    bracket_depth = 0
+    index = 0
+
+    while index < len(body_text):
+        char = body_text[index]
+        if char == '"':
+            in_quote = not in_quote
+            current.append(char)
+            index += 1
+            continue
+
+        if not in_quote:
+            if bracket_depth == 0 and body_text.startswith("[|", index):
+                segments.append("".join(current))
+                current = []
+                index += 2
+                while index < len(body_text) and body_text[index] in "|:]":
+                    index += 1
+                continue
+
+            if char == "[":
+                bracket_depth += 1
+            elif char == "]" and bracket_depth:
+                bracket_depth -= 1
+
+            if bracket_depth == 0 and char == "|":
+                segments.append("".join(current))
+                current = []
+                index += 1
+                while index < len(body_text) and body_text[index] in "|:]":
+                    index += 1
+                continue
+
+            if bracket_depth == 0 and body_text.startswith("::", index):
+                segments.append("".join(current))
+                current = []
+                index += 2
+                continue
+
+        current.append(char)
+        index += 1
+
+    segments.append("".join(current))
+    return segments
 
 
 def clean_measure_markers(content: str) -> str:

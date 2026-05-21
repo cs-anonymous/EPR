@@ -424,6 +424,10 @@ def _convert_ottava_to_native(text: str) -> str:
 
 
 def _rewrite_decoration(match: "_re.Match") -> str:
+    line_start = match.string.rfind("\n", 0, match.start()) + 1
+    if match.string[line_start:match.start()].count('"') % 2:
+        return match.group(0)
+
     body = match.group(1)
     if body in _KEEP_DECORATIONS:
         return match.group(0)

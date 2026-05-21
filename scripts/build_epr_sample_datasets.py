@@ -30,6 +30,8 @@ from pathlib import Path
 
 from transformers import AutoTokenizer
 
+from scripts.lm_midi_tokens import add_lm_midi_tokens
+
 
 COUNT_FIELDS = ["instruction", "score_header", "score_snip", "perf_context", "perf_target"]
 TASK_CONFIGS = {
@@ -90,7 +92,7 @@ def record_text(record: dict) -> str:
 
 def _is_phrase_header(line: str) -> bool:
     stripped = line.strip()
-    return bool(re.fullmatch(r"<H><V\d{3}>", stripped)) or (
+    return bool(re.fullmatch(r"<H[123]?><V\d{3}>", stripped)) or (
         stripped.startswith("H") and stripped[1:].isdigit()
     )
 
@@ -138,6 +140,8 @@ def compact_phrase_epr_context(record: dict) -> dict:
     """Apply phrase EPR compact context: M_prev + H_k + M_next, phi_M_prev."""
     if record.get("task") != "phrase_epr":
         return record
+    if "<M>" in str(record.get("perf_context", "")) or "<H>" in str(record.get("perf_target", "")):
+        return record
 
     out = dict(record)
     groups = _phrase_groups(str(record.get("score_snip", "")))
@@ -156,7 +160,9 @@ def compact_phrase_epr_context(record: dict) -> dict:
                 score_lines.append(nxt)
         out["score_snip"] = "\n".join(score_lines)
 
-    out["perf_context"] = _last_measure(str(record.get("perf_context", "")).splitlines())
+    compact_perf_context = _last_measure(str(record.get("perf_context", "")).splitlines())
+    if compact_perf_context:
+        out["perf_context"] = compact_perf_context
     out["context_design"] = "phrase_epr_compact_prev_measure"
     return out
 
@@ -478,6 +484,8 @@ def main() -> None:
 
     print("Loading tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained(str(args.tokenizer), trust_remote_code=True)
+    added = add_lm_midi_tokens(tokenizer)
+    print(f"  LM-MIDI tokens added: {added}")
     print(f"  Tokenizer loaded in {elapsed(overall_start)}")
 
     results = []

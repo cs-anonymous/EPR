@@ -127,9 +127,9 @@ Examples:
 
 These are used for:
 
-- note velocity
+- note velocity (`0..127`)
 - pedal/control value
-- phrase index
+- phrase index modulo 128
 - measure-local index
 
 Using `<Vxxx>` for phrase and measure index keeps slot 2 semantically stable:
@@ -214,7 +214,7 @@ Column semantics:
 |---|---|---:|---:|---:|
 | Note | Logic Pro note name, sharp spelling only, e.g. `F#2`, `A#3` | velocity `0..127` | note duration in bins or `EXT` | onset offset in bins or `EXT` |
 | Pedal | `P`, `P1`, or `P2` | control value `0..127` | `0` (`NIL`) | offset from most recent note onset or `EXT` |
-| Phrase | `H` | zero-based phrase index | phrase duration high byte | phrase duration low byte |
+| Phrase | `H` | phrase index modulo 128 | phrase duration high byte | phrase duration low byte |
 | Measure | `M` | zero-based measure index within current phrase | measure duration high byte | measure duration low byte |
 | Extension duration | `EXD` | `0` (`NIL`) | duration high byte | duration low byte |
 | Extension offset | `EXO` | `0` (`NIL`) | offset high byte | offset low byte |
@@ -365,15 +365,24 @@ Structural events are also fixed-width 4-token events. They do not update the no
 Phrase events have the format:
 
 ```text
-<H><Vphrase_id><Tdur_hi><Tdur_lo>
+<H><Vphrase_id_mod_128><Tdur_hi><Tdur_lo>
 ```
 
 | Slot | Token type | Meaning |
 |---|---|---|
 | 1 | `<H>` | Phrase boundary |
-| 2 | `<Vxxx>` | Phrase index |
+| 2 | `<Vxxx>` | Phrase index modulo 128 |
 | 3 | `<Txxx>` | High byte of phrase duration |
 | 4 | `<Txxx>` | Low byte of phrase duration |
+
+Phrase ids are zero-based. Slot 2 stores the id modulo 128:
+
+```text
+<H><V000> ... <H><V127>
+```
+
+The modulo id is a lightweight structural cue. It is not required to recover a
+globally unique phrase number across very long pieces.
 
 Phrase duration is decoded as:
 
@@ -672,7 +681,7 @@ If the first token is `<P>`, `<P1>`, or `<P2>`, decode:
 If the first token is `<H>`, decode:
 
 ```text
-<H><Vphrase_id><Tdur_hi><Tdur_lo>
+<H><Vphrase_id_mod_128><Tdur_hi><Tdur_lo>
 ```
 
 If the first token is `<M>`, decode:
@@ -744,7 +753,7 @@ which is sufficient for measure and phrase durations.
 | Value `<V000>...<V127>` | 128 |
 | Timing `<T000>...<T255>` | 256 |
 | Structural/control/wrapper tokens | 10–30 |
-| Total | about 530–550 |
+| Total | about 530–560 |
 
 This is much smaller than vocabulary-expansion approaches that add tens of thousands of MIDI tokens, while still achieving compact 4-token note events.
 
@@ -768,7 +777,7 @@ Main event types:
 ```text
 Note:    <Nxxx><Vxxx><Tdur|EXT><Toffset|EXT>
 Pedal:   <P|P1|P2><Vval><NIL><Toffset|EXT>
-Phrase:  <H><Vphrase_id><Tdur_hi><Tdur_lo>
+Phrase:  <H><Vphrase_id_mod_128><Tdur_hi><Tdur_lo>
 Measure: <M><Vmeasure_local_id><Tdur_hi><Tdur_lo>
 EXD:     <EXD><NIL><Tdur_hi><Tdur_lo>
 EXO:     <EXO><NIL><Toff_hi><Toff_lo>

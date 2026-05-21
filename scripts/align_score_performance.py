@@ -889,6 +889,8 @@ def generate_performance_tsv_with_phrases(
     """
     def structural_row(event: str, value: int, duration: int) -> str:
         duration = max(0, min(65535, int(duration)))
+        if event == "H":
+            value %= 128
         return f"{event}\t{value}\t{duration // 256}\t{duration % 256}"
 
     perf_midi = pretty_midi.PrettyMIDI(str(perf_midi_path))

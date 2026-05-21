@@ -22,7 +22,12 @@ import pretty_midi
 
 sys.path.insert(0, str(Path(__file__).parent / "scripts"))
 
-from aligned_abcx_format import AlignedAbcxError, build_orphan_aligned_abcx
+from aligned_abcx_format import (
+    AlignedAbcxError,
+    build_orphan_aligned_abcx,
+    score_measure_label,
+    score_phrase_label,
+)
 
 
 def abcx_to_midi(abcx_path: Path, output_midi: Path) -> bool:
@@ -229,19 +234,18 @@ def create_aligned_abcx(header: List[str], measures: List[str],
 
     # 按 phrase_size 分组添加小节
     num_measures = len(measures)
-    phrase_id = 1
+    phrase_index = 0
 
     for i in range(0, num_measures, phrase_size):
         # 添加 phrase 标记
-        lines.append(f'H{phrase_id}')
+        lines.append(score_phrase_label(phrase_index))
 
         # 添加该 phrase 的所有小节
         phrase_measures = measures[i:i + phrase_size]
-        for j, measure in enumerate(phrase_measures):
-            measure_id = i + j + 1
-            lines.append(f'M{measure_id}\t{measure}')
+        for measure_local_index, measure in enumerate(phrase_measures):
+            lines.append(f'{score_measure_label(measure_local_index)}{measure}')
 
-        phrase_id += 1
+        phrase_index += 1
 
     return '\n'.join(lines)
 

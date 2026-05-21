@@ -21,6 +21,8 @@ from typing import List, Dict
 from collections import defaultdict
 from tqdm import tqdm
 
+from scripts.lm_midi_tokens import event_lines_to_tokens, measure_event_tokens, phrase_event_tokens, phrase_index_token
+
 
 def performance_piece_id(perf_tsv_path: str) -> str:
     """Convert metadata performance_tsv_path to the JSONL piece_id format."""
@@ -68,9 +70,9 @@ class TSVParser:
                 header_lines.append(line)
                 if line.strip() == '# structural_duration=u16_hi_lo':
                     strict_structural = True
-            elif line.startswith('H') and '\t' in line:
+            elif re.match(r"^H[123]?\t", line):
                 parts = line.split('\t')
-                if parts[0] == 'H' and len(parts) == 4:
+                if parts[0] in {'H', 'H1', 'H2', 'H3'} and len(parts) == 4:
                     phrase_count += 1
                     current_phrase = f'H{phrase_count}'
                     phrases[current_phrase] = []
@@ -160,10 +162,11 @@ class AlignedABCXParser:
             elif (phrase_token_id := _parse_score_phrase_token(line)) is not None:
                 phrase_count += 1
                 current_phrase = f'H{phrase_count}'
-                phrase_display_ids[current_phrase] = f'<H><V{phrase_token_id:03d}>'
+                event_token, local_id = phrase_index_token(phrase_token_id)
+                phrase_display_ids[current_phrase] = f'{event_token}<V{local_id:03d}>'
                 phrases[current_phrase] = []
-            elif (measure_token_id := _parse_score_measure_token(line)) is not None and '\t' in line:
-                parts = line.split('\t', 1)
+            elif (measure_token_id := _parse_score_measure_token(line)) is not None:
+                parts = re.split(r"\s+", line, maxsplit=1)
                 measure_count += 1
                 measure_id = f'M{measure_count}'
                 measure_display_ids[measure_id] = f'<M><V{measure_token_id:03d}>'
@@ -183,9 +186,10 @@ class AlignedABCXParser:
 
 def _parse_score_phrase_token(line: str) -> int | None:
     stripped = line.strip()
-    match = re.fullmatch(r"<H><V(\d{3})>", stripped)
+    match = re.fullmatch(r"<H([123]?)><V(\d{3})>", stripped)
     if match:
-        return int(match.group(1))
+        page = int(match.group(1) or 0)
+        return page * 128 + int(match.group(2))
     if stripped.startswith('H') and stripped[1:].isdigit():
         return int(stripped[1:])
     return None
@@ -215,13 +219,16 @@ def compact_perf_event(line: str) -> str:
 
 
 def format_perf_measure(measure_id: str, duration, event_lines: List[str]) -> str:
-    events = [compact_perf_event(line) for line in event_lines]
-    events = [event for event in events if event]
-    return ' '.join([f"{measure_id}:{duration}"] + events)
+    return measure_event_tokens(0, duration) + event_lines_to_tokens(event_lines)
+
+
+def format_perf_measure_with_index(local_index: int, duration, event_lines: List[str]) -> str:
+    return measure_event_tokens(local_index, duration) + event_lines_to_tokens(event_lines)
 
 
 def format_perf_phrase(phrase_id: str, duration, measure_parts: List[str]) -> str:
-    return '\n'.join([f"{phrase_id}:{duration}"] + [part for part in measure_parts if part])
+    phrase_index = int(phrase_id[1:]) - 1
+    return phrase_event_tokens(phrase_index, duration) + ''.join(part for part in measure_parts if part)
 
 
 def format_score_measure(measure_id: str, content: str, display_id: str | None = None) -> str:
@@ -391,8 +398,9 @@ class PhraseEPRGenerator:
                     prev_m_id = prev_phrase_measures[-1]
                     if prev_m_id in perf_data['measures'] and prev_m_id in perf_data['measure_durations']:
                         prev_duration = perf_data['measure_durations'][prev_m_id]
-                        perf_context = format_perf_measure(
-                            prev_m_id, prev_duration, perf_data['measures'][prev_m_id]
+                        prev_local_index = prev_phrase_measures.index(prev_m_id)
+                        perf_context = format_perf_measure_with_index(
+                            prev_local_index, prev_duration, perf_data['measures'][prev_m_id]
                         )
 
             # 获取 target performance phrase
@@ -405,8 +413,9 @@ class PhraseEPRGenerator:
                 for m_id in perf_data['phrases'][phrase_id]:
                     if m_id in perf_data['measures'] and m_id in perf_data['measure_durations']:
                         m_duration = perf_data['measure_durations'][m_id]
+                        local_index = perf_data['phrases'][phrase_id].index(m_id)
                         perf_lines.append(
-                            format_perf_measure(m_id, m_duration, perf_data['measures'][m_id])
+                            format_perf_measure_with_index(local_index, m_duration, perf_data['measures'][m_id])
                         )
 
                 if perf_lines:
