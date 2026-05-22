@@ -19,7 +19,7 @@ from collections import defaultdict
 import random
 from tqdm import tqdm
 
-from scripts.lm_midi_tokens import event_lines_to_tokens, measure_event_tokens, phrase_event_tokens, phrase_page_token
+from scripts.lm_midi_tokens import event_lines_to_tokens, measure_event_tokens, phrase_event_tokens, phrase_index_token
 
 
 def performance_piece_id(perf_tsv_path: str) -> str:
@@ -367,7 +367,7 @@ class AlignedABCXParser:
             elif (phrase_token_id := _parse_score_phrase_token(line)) is not None:
                 phrase_count += 1
                 current_phrase = f'H{phrase_count}'
-                event_token, local_id = phrase_page_token(phrase_token_id)
+                event_token, local_id = phrase_index_token(phrase_token_id)
                 phrase_display_ids[current_phrase] = f'{event_token}<V{local_id:03d}>'
                 phrases[current_phrase] = []
             elif (measure_token_id := _parse_score_measure_token(line)) is not None:
@@ -543,10 +543,12 @@ class MeasureEPRGenerator:
                 else:
                     task_type = 'main'
 
+                instruction_target = score_data['measure_display_ids'].get(measure_id, measure_id)
+
                 sample = {
                     'task': 'measure_epr',
                     'task_type': task_type,
-                    'instruction': f'Generate performance for {measure_id}',
+                    'instruction': f'Generate performance for {instruction_target}',
                     'score_header': score_data['header'],
                     'score_snip': '\n'.join(score_snip),
                     'perf_context': perf_context,
@@ -674,8 +676,14 @@ class PhraseEPRGenerator:
                 format_score_phrase(phrase_id, current_phrase_lines, score_data['phrase_display_ids'].get(phrase_id))
             )
             if i < len(phrase_ids) - 1:
-                next_phrase_measures = score_data['phrases'][phrase_ids[i + 1]]
+                next_phrase_id = phrase_ids[i + 1]
+                next_phrase_measures = score_data['phrases'][next_phrase_id]
                 if next_phrase_measures:
+                    # Add the next phrase boundary explicitly so the trailing
+                    # lookahead measure cannot be parsed as part of H_k.
+                    score_snip.append(
+                        format_score_phrase(next_phrase_id, [], score_data['phrase_display_ids'].get(next_phrase_id))
+                    )
                     next_m_id = next_phrase_measures[0]
                     if next_m_id in score_data['measures']:
                         score_snip.append(
@@ -723,10 +731,13 @@ class PhraseEPRGenerator:
                     else:
                         task_type = 'main'
 
+                    instruction_target = score_data['phrase_display_ids'].get(phrase_id, phrase_id)
+                    measure_count = len(perf_data['phrases'][phrase_id])
+
                     sample = {
                         'task': 'phrase_epr',
                         'task_type': task_type,
-                        'instruction': f'Generate performance for {phrase_id}',
+                        'instruction': f'Generate performance for {instruction_target} with {measure_count} measures.',
                         'score_header': score_data['header'],
                         'score_snip': '\n'.join(score_snip),
                         'perf_context': perf_context,

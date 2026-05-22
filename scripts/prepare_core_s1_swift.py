@@ -51,6 +51,10 @@ def section(title: str, content: str) -> str:
     return f"{title}:\n{content}" if content else ""
 
 
+def sample_instruction(sample: dict, default: str) -> str:
+    return str(sample.get("instruction") or default)
+
+
 def convert_measure_epr(sample: dict) -> dict:
     target = sample.get("target_measure_id", "")
     task_type = sample.get("task_type", "")
@@ -81,6 +85,50 @@ def convert_phrase_epr(sample: dict) -> dict:
         f"Task type: {task_type}" if task_type else "",
         section("Score", score_context(sample, "score_snip")),
         section("Previous performance", perf_context),
+    ])
+    return make_messages(user, sample["perf_target"])
+
+
+def convert_abcx2pm(sample: dict) -> dict:
+    task_type = sample.get("task_type", "")
+    perf_context = sample.get("perf_context", "")
+    if task_type == "coldstart" or not perf_context:
+        instruction = sample_instruction(
+            sample,
+            "Render the provided abcx score into expressive performance midi. Output only the target span.",
+        )
+    else:
+        instruction = sample_instruction(
+            sample,
+            "Using the provided first performance measure as a style reference, render the rest of the abcx score into expressive performance midi. Output only the target span.",
+        )
+    user = join_nonempty([
+        instruction,
+        f"Task type: {task_type}" if task_type else "",
+        section("abcx", score_context(sample, "score_snip")),
+        section("first performance measure", perf_context),
+    ])
+    return make_messages(user, sample["perf_target"])
+
+
+def convert_sm2pm(sample: dict) -> dict:
+    task_type = sample.get("task_type", "")
+    perf_context = sample.get("perf_context", "")
+    if task_type == "coldstart" or not perf_context:
+        instruction = sample_instruction(
+            sample,
+            "Render the provided score midi into expressive performance midi. Output only the target span.",
+        )
+    else:
+        instruction = sample_instruction(
+            sample,
+            "Using the provided first performance measure as a style reference, render the rest of the score midi into expressive performance midi. Output only the target span.",
+        )
+    user = join_nonempty([
+        instruction,
+        f"Task type: {task_type}" if task_type else "",
+        section("score midi", sample.get("score_midi_snip", "")),
+        section("first performance measure", perf_context),
     ])
     return make_messages(user, sample["perf_target"])
 
@@ -137,6 +185,8 @@ def convert_perf_mask(sample: dict) -> dict:
 CONVERTERS: dict[str, Callable[[dict], dict]] = {
     "measure_epr": convert_measure_epr,
     "phrase_epr": convert_phrase_epr,
+    "abcx2pm": convert_abcx2pm,
+    "sm2pm": convert_sm2pm,
     "measure_score_lang_continuation": convert_score_continuation,
     "measure_score_lang_mask": convert_score_mask,
     "phrase_score_lang_continuation": convert_score_continuation,

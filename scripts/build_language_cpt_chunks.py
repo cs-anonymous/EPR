@@ -6,7 +6,8 @@ Rules:
   - aligned ABCX chunks repeat the score header.
   - aligned ABCX and MIDI-TSV chunks use phrase boundaries.
   - oversized MIDI-TSV phrases are split inside the phrase by measure/event.
-  - markdown chunks use heading/block boundaries and avoid cutting code fences.
+  - markdown chunks use heading/block boundaries, avoid cutting code fences,
+    and are packed within each source file.
 """
 
 from __future__ import annotations
@@ -701,6 +702,40 @@ def chunk_markdown(path: Path, counter: TokenCounter, max_tokens: int) -> list[t
     return chunks
 
 
+def pack_text_chunks(
+    chunks: list[tuple[str, int]],
+    counter: TokenCounter,
+    max_tokens: int,
+    separator: str = "\n\n",
+) -> list[tuple[str, int]]:
+    packed: list[tuple[str, int]] = []
+    current_text = ""
+    current_tokens = 0
+
+    for text, tokens in chunks:
+        if not text.strip():
+            continue
+        if not current_text:
+            current_text = text
+            current_tokens = tokens if tokens else counter.count(text)
+            continue
+
+        candidate = f"{current_text}{separator}{text}"
+        candidate_tokens = counter.count(candidate)
+        if candidate_tokens <= max_tokens:
+            current_text = candidate
+            current_tokens = candidate_tokens
+            continue
+
+        packed.append((current_text, current_tokens))
+        current_text = text
+        current_tokens = tokens if tokens else counter.count(text)
+
+    if current_text:
+        packed.append((current_text, current_tokens))
+    return packed
+
+
 def force_split_to_limit(text: str, counter: TokenCounter, max_tokens: int) -> list[tuple[str, int]]:
     if counter.count(text) <= max_tokens:
         return [(text, counter.count(text))]
@@ -810,14 +845,18 @@ def process_source(task: tuple[str, str, str, str, int]) -> dict:
     }[chunker_name]
     records = []
     chunk_id = 0
-    for text, _tokens in chunker(path, _WORKER_COUNTER, max_tokens):
-        if chunker_name == "markdown":
-            final_chunks = [(text, _WORKER_COUNTER.count(text))]
-        else:
-            final_chunks = force_split_to_limit(text, _WORKER_COUNTER, max_tokens)
+    chunks = chunker(path, _WORKER_COUNTER, max_tokens)
+    if chunker_name == "markdown":
+        final_chunks = pack_text_chunks(chunks, _WORKER_COUNTER, max_tokens)
         for final_text, final_tokens in final_chunks:
             chunk_id += 1
             records.append((chunk_id, final_text, final_tokens, len(final_text), final_tokens > max_tokens))
+    else:
+        for text, _tokens in chunks:
+            final_chunks = force_split_to_limit(text, _WORKER_COUNTER, max_tokens)
+            for final_text, final_tokens in final_chunks:
+                chunk_id += 1
+                records.append((chunk_id, final_text, final_tokens, len(final_text), final_tokens > max_tokens))
     return {
         "corpus_type": corpus_type,
         "source": path_str,
@@ -967,7 +1006,7 @@ def main() -> None:
     parser.add_argument("--miditsv-root", type=Path, default=None)
     parser.add_argument("--knowledge-dir", type=Path, default=Path("PianoCoReS/knowledge"))
     parser.add_argument("--out-dir", type=Path, default=Path("PianoCoReS/CoReS/language_cpt"))
-    parser.add_argument("--tokenizer", type=Path, default=Path("Qwen3.5-4B"))
+    parser.add_argument("--tokenizer", type=Path, default=Path("Qwen3.5-4B-LM-MIDI-Full"))
     parser.add_argument("--max-tokens", type=int, default=MAX_TOKENS)
     parser.add_argument("--workers", type=int, default=os.cpu_count() or 1)
     parser.add_argument("--work-dir", type=Path, default=Path("PianoCoReS/.tmp_language_cpt"))
@@ -1048,10 +1087,15 @@ def main() -> None:
             )
         write_summary(temp_dir, rows)
 
-        if args.out_dir.exists():
-            shutil.rmtree(args.out_dir)
-        args.out_dir.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(temp_dir), str(args.out_dir))
+        args.out_dir.mkdir(parents=True, exist_ok=True)
+        for path in temp_dir.iterdir():
+            target = args.out_dir / path.name
+            if target.exists():
+                if target.is_dir():
+                    shutil.rmtree(target)
+                else:
+                    target.unlink()
+            shutil.move(str(path), str(target))
         for row in rows:
             row["file"] = str(args.out_dir / Path(row["file"]).name)
         write_summary(args.out_dir, rows)

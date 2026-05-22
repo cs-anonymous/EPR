@@ -251,7 +251,7 @@ class PhraseEPRGenerator:
     """生成 Phrase-level EPR 训练样本
 
     新设计：
-    - score_snip: M_prev + H_k + M_next
+    - score_snip: M_prev + H_k + H_{k+1} + M_next
     - perf_context: M_prev 的演奏
     """
 
@@ -377,7 +377,7 @@ class PhraseEPRGenerator:
                             next_m_id, score_data['measures'][next_m_id], score_data['measure_display_ids'].get(next_m_id)
                         )
 
-            # 构建 score_snip: M_prev + H_k + M_next
+            # 构建 score_snip: M_prev + H_k + H_{k+1} + M_next
             score_snip_lines = []
             if prev_measure_line:
                 score_snip_lines.append(prev_measure_line)
@@ -385,6 +385,10 @@ class PhraseEPRGenerator:
                 format_score_phrase(phrase_id, current_phrase_lines, score_data['phrase_display_ids'].get(phrase_id))
             )
             if next_measure_line:
+                next_phrase_id = phrase_ids[i + 1]
+                score_snip_lines.append(
+                    format_score_phrase(next_phrase_id, [], score_data['phrase_display_ids'].get(next_phrase_id))
+                )
                 score_snip_lines.append(next_measure_line)
 
             score_snip = '\n'.join(score_snip_lines)
@@ -429,10 +433,13 @@ class PhraseEPRGenerator:
                     else:
                         task_type = 'main'
 
+                    instruction_target = score_data['phrase_display_ids'].get(phrase_id, phrase_id)
+                    measure_count = len(perf_data['phrases'][phrase_id])
+
                     sample = {
                         'task': 'phrase_epr',
                         'task_type': task_type,
-                        'instruction': f'Generate performance for {phrase_id}',
+                        'instruction': f'Generate performance for {instruction_target} with {measure_count} measures.',
                         'score_header': score_data['header'],
                         'score_snip': score_snip,
                         'perf_context': perf_context,

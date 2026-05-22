@@ -20,7 +20,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--knowledge-dir", type=Path, default=Path("PianoCoReS/knowledge"))
     parser.add_argument("--out-dir", type=Path, default=Path("PianoCoReS/Corpora/language_cpt"))
-    parser.add_argument("--tokenizer", type=Path, default=Path("Qwen3.5-4B"))
+    parser.add_argument("--tokenizer", type=Path, default=Path("Qwen3.5-4B-LM-MIDI-Full"))
     parser.add_argument("--max-tokens", type=int, default=1536)
     parser.add_argument("--workers", type=int, default=4)
     args = parser.parse_args()

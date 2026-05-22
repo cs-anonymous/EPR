@@ -122,6 +122,7 @@ def main() -> None:
     parser.add_argument("--no-bf16", dest="bf16", action="store_false")
     parser.add_argument("--gradient-checkpointing", action="store_true", default=True)
     parser.add_argument("--no-gradient-checkpointing", dest="gradient_checkpointing", action="store_false")
+    parser.add_argument("--resume-from-checkpoint", type=str, default=None, help="Path to checkpoint to resume from")
     args = parser.parse_args()
 
     trainable_token_ids = load_new_token_ids(args.base_tokenizer, args.expanded_tokenizer)
@@ -191,7 +192,7 @@ def main() -> None:
         train_dataset=raw_dataset,
         data_collator=collator,
     )
-    trainer.train()
+    trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
     trainer.save_model()
     trainer.save_state()
 

@@ -1,607 +1,142 @@
-# SPIRE SFT 设计
+# SPIRE / EPR SFT 设计（合并稿）
 
-## 1. 核心问题：CPT 还是 SFT？
+> 本文档合并了原 `SPIRE SFT 设计.md` 与 `EPR_SFT_PLAN.md`。  
+> 目标是定义一条以 **Expressive Piano Rendering (EPR)** 为核心的 SFT 路线：从乐谱侧输入生成 expressive performance，而不是把 continuation 当作主任务。
 
-### 1.1 判断标准
+## 1. 核心判断：CPT 还是 SFT
 
-- **目标决定方法**：如果目标是论文任务效果（score→performance、format conversion），SFT 优先；如果目标是训练一个音乐文本基础模型（通用补全、续写、风格迁移），CPT 更必要。
-- **SFT 可替代 CPT 的三种情况**：
-  1. 基础模型已有较强的代码/表格/结构化文本能力（MIDI-TSV、ABCX 本质是结构化文本）
-  2. 目标任务明确（score→performance、format conversion、repair）
-  3. 能构造大量高质量任务样本
-- **SFT 不能替代 CPT 的情况**：模型完全不熟悉表示语言；大量无标注数据但配对数据少；需要通用领域补全能力；SFT 数据覆盖不足。
+- 如果目标是论文任务效果，尤其是 `score -> performance`、`format conversion`、`repair`，则 **SFT 优先**。
+- 如果目标是训练一个通用音乐文本基础模型，要求大规模无监督补全、开放式续写、风格迁移，则 CPT 更重要。
+- 当前项目的主目标是 EPR，因此主路线应是：
 
-### 1.2 实验驱动的训练策略
-
-**核心问题**：Language Learning SFT 是否必要？Measure-level 还是 Phrase-level？
-
-**实验设计**：通过对比实验验证不同训练路径的效果（详见 [第 9 节](#9-实验设计与评估)）。
-
-**两种可能的训练路线**：
-
-```
-路线 A：直接 EPR
-Base LLM → EPR SFT → spire-sft-epr
-
-路线 B：Language Learning → EPR
-Base LLM → Language Learning SFT → EPR SFT → spire-sft-epr
+```text
+Base LLM
+  -> Language Learning SFT（仅保留 mask / QA / repair）
+  -> EPR Branch SFT
+  -> spire-sft-epr
 ```
 
-**粒度选择**：
-- Measure-level (M)：小节级，输入输出短，训练稳定
-- Phrase-level (H)：乐句级（4-8 小节），context 更长，可能表达性更好
+这里的 Language Learning 不再承担“继续写音乐”的 continuation 目标，而是承担：
 
-**V1 实验目标**：
-1. 验证 Language Learning 是否有帮助（路线 A vs 路线 B）
-2. 验证粒度选择的影响（Measure vs Phrase）
-3. 根据实验结果决定最终训练策略
-
-关键原则：
-
-1. **先做实验，再定策略**：不预设 Language Learning 必要性，用数据说话
-2. **粒度独立实验**：Measure-level 和 Phrase-level 分别实验，不混合
-3. **EPR 优先，CSR 后置**：V1 只做 EPR，CSR 作为 V2 目标
-4. **最小化实验成本**：V1 只训练 4 个核心模型，快速验证假设
-
-### 1.3 评估基线
-
-先做小规模 SFT 实验（1–3 epoch），根据错误类型判断是否需要 CPT：
-
-| 主要错误类型 | 说明 |
-|---|---|
-| 格式崩、token 不认识、长序列结构断裂 | 需要 CPT 或 SFT 化 CPT |
-| 任务理解错、输出风格不稳定 | 加强 SFT 即可 |
-
-评估指标：parse success rate、measure duration consistency、event validity、ABCX ↔ MIDI-TSV match、score-performance alignment metric、OOD 泛化。
-
----
+- 让模型熟悉 `ABCX`、`Score MIDI-TSV`、`Performance MIDI-TSV` 三种结构化文本；
+- 显式学习各字段与 mask 的恢复规则；
+- 降低后续 EPR 阶段的格式漂移。
 
 ## 2. 符号体系
 
-### 2.1 大写：语言/集合
+### 2.1 语言与样本
 
 | 符号 | 含义 |
 |---|---|
-| $\Sigma$ | 乐谱语言 / 乐谱集 |
-| $\Phi$ | 演奏语言 / 演奏集 |
+| $\Sigma$ | ABCX 乐谱语言 / 乐谱集 |
+| $\Psi$ | Score MIDI-TSV 语言 / 乐谱 MIDI 集 |
+| $\Phi$ | Performance MIDI-TSV 语言 / 演奏集 |
+| $\sigma \in \Sigma$ | 一首具体 ABCX 乐谱 |
+| $\psi \in \Psi$ | 一首具体 score MIDI-TSV |
+| $\phi \in \Phi$ | 一次具体 expressive performance |
 
-### 2.2 小写：具体样本
+### 2.2 结构粒度
 
 | 符号 | 含义 |
 |---|---|
-| $\sigma \in \Sigma$ | 一首具体乐谱 |
-| $\phi \in \Phi$ | 一次具体演奏 |
-| $\sigma_{H_k}$、$\phi_{H_k}$ | 第 $k$ 个乐句（phrase） |
-| $\sigma_{M_k}$、$\phi_{M_k}$ | 第 $k$ 个小节（measure） |
-| $\sigma_{\text{head}}$ | 乐谱头部（调号、拍号、tempo、metadata 等） |
-| $f(\cdot)$ | Score mask 函数，遮去乐谱的特定属性 |
-| $g(\cdot)$ | Performance mask 函数，遮去演奏的特定属性 |
-
-> 避免使用 H/P/M/S 作为抽象变量——它们在 MIDI-TSV 中已有具体含义（H=phrase, P=pedal, M=measure, S=slice）。也避免用 $\pi$ 表示 performance（RLHF 中常用作 policy model）。
-
-### 2.3 Mask 函数定义
-
-**Score mask $f$ 的变体：**
-
-| 记号 | 遮去内容 | 示例 |
-|---|---|---|
-| $f_{\text{acc}}(\sigma)$ | 遮去所有升降号（#、b） | 调性推断 |
-| $f_{\text{treble}}(\sigma)$ | 遮去高音谱声部 | 低音预测高音 |
-| $f_{\text{bass}}(\sigma)$ | 遮去低音谱声部 | 高音预测低音 |
-| $f_{\text{label}}(\sigma)$ | 遮去表情、力度、速度与演奏法标记，如 `p`、`f`、`acc.`、`rit.`、`Ped.`、staccato、slur 等 | 恢复谱面 expressive / articulation labels |
-
-**Performance mask $g$ 的变体：**
-
-| 记号 | 遮去内容 | 示例 |
-|---|---|---|
-| $g_{\text{timing}}(\phi)$ | 遮去 onset / timing | 学演奏时序推断 |
-| $g_{\text{vel}}(\phi)$ | 遮去 velocity | 学力度表达推断 |
-| $g_{\text{dur}}(\phi)$ | 遮去 note duration | 学 articulation 推断 |
-| $g_{\text{pedal}}(\phi)$ | 遮去 pedal events | 学踏板策略推断 |
-
-> Priority: **timing > velocity > duration > pedal**。pitch mask 不推荐——pitch 大多由 score 决定。
-
-### 2.4 数据集定义
-
-| 数据集 | 符号 | 说明 |
-|---|---|---|
-| 未配对乐谱集 | $\mathcal{D}_{\Sigma} = \{ \sigma^{(i)} \}_{i=1}^{N}$ | 仅有 score，无对应 performance |
-| 未配对演奏集 | $\mathcal{D}_{\Phi} = \{ \phi^{(j)} \}_{j=1}^{M}$ | 仅有 performance MIDI，无对应 score |
-| 小节级配对集 | $\mathcal{D}_{\Sigma\Phi}^{M} = \{ (\sigma_{M_k}^{(i)}, \phi_{M_k}^{(i)}) \}$ | score-performance 在 measure 级别对齐 |
-
-> 不需要曲目级配对或乐句级配对。配对数据中如果 phrase 级对齐质量差，降级为未配对数据集用于 Language Learning SFT；只有对齐可靠的配对才用于 EPR / CSR SFT。
-
----
-
-## 3. 任务体系
-
-核心任务分为 4 大类：**Score Language**、**Performance Language**、**EPR**、**CSR**。
-
-> **重要**：Measure-level 和 Phrase-level 任务是**独立的**，不混合。Measure Lang 只包含 Measure-level 任务，Phrase Lang 只包含 Phrase-level 任务。
-
-### 3.1 Score Language
-
-学习乐谱表示的语法、结构、乐句延续。
-
-#### Measure-level Score Language
-
-| 任务 | 公式 | 优先级 | 说明 |
-|---|---|---|---|
-| Measure continuation | $\sigma_{\text{head}} + \sigma_{M_k} \rightarrow \sigma_{M_{k+1}}$ | 高 | 学局部格式、measure boundary |
-| Measure mask reconstruction | $\sigma_{\text{head}} + f(\sigma_{M_k}) \rightarrow \sigma_{M_k}$ | 高 | 用 $f$ 遮去部分信息后恢复 |
-
-#### Phrase-level Score Language
-
-| 任务 | 公式 | 优先级 | 说明 |
-|---|---|---|---|
-| Phrase continuation | $\sigma_{\text{head}} + \sigma_{H_k} \rightarrow \sigma_{H_{k+1}}$ | 高 | 学乐谱乐句延续、重复与变奏 |
-| Phrase mask reconstruction | $\sigma_{\text{head}} + f(\sigma_{H_k}) \rightarrow \sigma_{H_k}$ | 高 | 用 $f$ 遮去部分信息后恢复 |
-
-> $f$ 的具体变体见 [2.3 Mask 函数定义](#23-mask-函数定义)，包括 acc / treble / bass / label 等。
-
-### 3.2 Performance Language
-
-学习 performance MIDI 的事件分布、属性连续性。
-
-#### Measure-level Performance Language
-
-| 任务 | 公式 | 优先级 | 说明 |
-|---|---|---|---|
-| Measure continuation | $\phi_{M_k} \rightarrow \phi_{M_{k+1}}$ | 高 | 学局部演奏事件分布 |
-| Measure mask reconstruction | $g(\phi_{M_k}) \rightarrow \phi_{M_k}$ | 高 | 用 $g$ 遮去某一类属性后恢复 |
-
-#### Phrase-level Performance Language
-
-| 任务 | 公式 | 优先级 | 说明 |
-|---|---|---|---|
-| Phrase continuation | $\phi_{H_k} \rightarrow \phi_{H_{k+1}}$ | 高 | 学 performance 分布 |
-| Phrase mask reconstruction | $g(\phi_{H_k}) \rightarrow \phi_{H_k}$ | 高 | 用 $g$ 遮去某一类属性后恢复 |
-
-> $g$ 的具体变体见 [2.3 Mask 函数定义](#23-mask-函数定义)，包括 timing / velocity / duration / pedal 等。
-
-### 3.3 EPR：Expressive Performance Rendering
-
-从 score 生成 expressive performance。
-
-#### Measure-level EPR
-
-| 任务 | 公式 | 优先级 | 说明 |
-|---|---|---|---|
-| **Measure EPR（主任务）** | $\sigma_{\text{head}} + \sigma_{M_{k-1}} + \sigma_{M_k} + \sigma_{M_{k+1}} + \phi_{M_{k-1}} \rightarrow \phi_{M_k}$ | **最高** | 3-measure score context window + previous performance，输出中间小节 |
-| Cold-start EPR | $\sigma_{\text{head}} + \sigma_{M_1} + \sigma_{M_2} \rightarrow \phi_{M_1}$ | 高 | 曲子开头渲染（无前文） |
-| EPR attribute generation | $\sigma_{\text{head}} + \sigma_{M_k} + g(\phi_{M_k}) \rightarrow \phi_{M_k}$ | 中 | 用 $g$ mask 生成 timing / velocity / duration / pedal 等演奏属性 |
-
-#### Phrase-level EPR
-
-| 任务 | 公式 | 优先级 | 说明 |
-|---|---|---|---|
-| **Phrase EPR（主任务）** | $\sigma_{\text{head}} + \sigma_{H_{k-1}} + \sigma_{H_k} + \sigma_{H_{k+1}} + \phi_{H_{k-1}} \rightarrow \phi_{H_k}$ | **最高** | 3-phrase score context window + previous performance，输出中间乐句 |
-| Cold-start EPR | $\sigma_{\text{head}} + \sigma_{H_1} + \sigma_{H_2} \rightarrow \phi_{H_1}$ | 高 | 曲子开头渲染（无前文） |
-| Intra-phrase EPR | $\sigma_{\text{head}} + \sigma_{H_k} + \text{partial } \phi_{H_k} \rightarrow \text{remaining } \phi_{H_k}$ | 中 | 长乐句内部续写（仅 Phrase-level 需要） |
-| EPR attribute generation | $\sigma_{\text{head}} + \sigma_{H_k} + g(\phi_{H_k}) \rightarrow \phi_{H_k}$ | 中 | 用 $g$ mask 生成演奏属性 |
-
-> Priority: **timing > velocity > duration > pedal**。pitch mask 不推荐——pitch 大多由 score 决定，不是 expressive performance 的主要难点。
-> 
-> **V1 简化**：只做主任务（Measure EPR 或 Phrase EPR），不做 attribute generation 和 intra-phrase EPR。
-
-### 3.4 CSR：Canonical Score Reconstruction
-
-从 performance 恢复规范 score。分两个阶段：先单乐句投票确定 head，再以 head 为条件重建 score phrase。
-
-| 任务 | 公式 | 优先级 | 说明 |
-|---|---|---|---|
-| **Head prediction** | $\phi_{H_k} \rightarrow \hat{\sigma}_{\text{head}}^{(k)}$ | 高 | 每个乐句独立预测 head，多句投票得最终结果 |
-| **Head-conditioned CSR** | $\hat{\sigma}_{\text{head}} + \phi_{H_k} \rightarrow \sigma_{H_k}$ | **最高** | 利用投票确定的 head 恢复乐句 |
-| CSR attribute recovery | $\hat{\sigma}_{\text{head}} + \phi_{H_k} + f(\sigma_{H_k}) \rightarrow \sigma_{H_k}$ | 中 | 用 2.3 中定义的 $f$ mask 恢复 acc / treble / bass / label 等 score 属性 |
-
-**Head prediction 的投票策略：** 每个乐句 $\phi_{H_k}$ 独立预测 $\hat{\sigma}_{\text{head}}^{(k)}$，对各字段（拍号、调号、tempo 等）分别投票取多数，得到最终 $\hat{\sigma}_{\text{head}}$。
-
-**Attribute generation / recovery 与 EPR / CSR 对称：** EPR 用 $g$ mask 遮去 performance 属性并恢复，CSR 用 $f$ mask 遮去 score 属性并恢复，体现了 $\Sigma \leftrightarrow \Phi$ 的互逆本质。
-
----
-
-## 4. 数据生成策略
-
-### 4.1 未配对乐谱集 $\mathcal{D}_{\Sigma}$
-
-使用启发式算法将乐谱切割成乐句（一般 4–8 measures），得到 $\sigma_{H_k}$ 和 $\sigma_{M_k}$。
-
-生成的样本用于 **Score Language SFT**：
-- phrase / measure continuation
-- score mask reconstruction（$f$-mask）
-
-### 4.2 未配对演奏集 $\mathcal{D}_{\Phi}$
-
-使用 **Omnizart** 算法识别 downbeat，根据 downbeat 切割成小节 $\phi_{M_k}$，再通过启发式算法将多个小节连接成乐句 $\phi_{H_k}$。
-
-生成的样本用于 **Performance Language SFT**：
-- phrase / measure continuation
-- performance mask reconstruction（$g$-mask）
-
-> 如果 performance 的启发式 phrase 切分质量不佳，降级为 measure 级别使用。
-
-### 4.3 小节级配对集 $\mathcal{D}_{\Sigma\Phi}^{M}$
-
-先用启发式算法将乐谱切割成乐句（以 score 为主轴），再根据 measure 级配对信息将 performance 也切割成对应的乐句 $\phi_{H_k}$。
-
-**配对质量控制**：如果 phrase 级对齐质量差（如 measure 数量不匹配、边界偏移过大），降级为未配对数据集使用，不用于 EPR / CSR。只有对齐可靠的配对才用于 EPR / CSR SFT。
-
-生成的样本进入后续任务分支，不在 Step 1 使用：
-- 完整 EPR rendering
-- EPR attribute generation（$g$-mask）
-- CSR head prediction
-- Head-conditioned CSR
-- CSR attribute recovery（$f$-mask）
-
-其中 EPR 样本只进入 EPR Branch，CSR 样本只进入 CSR Branch。
-
-### 4.4 通用规则
-
-- **Performance 时间归一化**：目标小节内部的时间写成**相对 measure onset**，而非全曲绝对 tick，避免数字污染导致泛化差。
-- **Phrase 内部结构**：对于长乐句（8 measures），可加 intra-phrase continuation 降低一次输出整个 phrase 的难度。
-- **采样上限**：同一首曲子限制采样 K 个 windows（如 20–50 个），避免长曲子支配训练集。
-
----
-
-## 5. 推荐训练流程与数据比例
-
-### 5.1 Step 1：Language Learning SFT
-
-Step 1 是共享底座，目标是让模型掌握 $\Sigma$ 与 $\Phi$ 两种文本语言，以及二者的格式规则。这个阶段的数据量可以比普通 SFT 更大，因为它承担的是 domain adaptation / 伪 CPT 的角色。
-
-这个阶段只包含：
-
-- Score Language
-- Performance Language
-- Knowledge QA
-- format validation / repair
-- score / performance mask reconstruction
-
-不包含：
-
-- EPR rendering
-- CSR reconstruction
-- EPR / CSR attribute generation / recovery
-
-推荐比例：
-
-| 任务类型 | 比例 | 说明 |
-|---|---|---|
-| Performance Language（continuation + $g$-mask） | 40–50% | 最终 EPR 输出是 performance，优先让模型熟悉 $\Phi$ |
-| Score Language（continuation + $f$-mask） | 25–35% | 学习 $\Sigma$ 的谱面结构、声部、调性与小节关系 |
-| Knowledge QA / validation / repair | 15–25% | 固化 ABCX、MIDI-TSV、mask、转换边界规则 |
-
-保存 checkpoint：
-
-```
-spire-sft-language
-```
-
-### 5.2 Step 2a：EPR Branch SFT
-
-从 `spire-sft-language` 初始化，只训练 EPR 相关任务。不要混入 CSR。
-
-推荐比例：
-
-| 任务类型 | 比例 | 说明 |
-|---|---|---|
-| Score-conditioned EPR（主任务） | 40–50% | 根据 score context + previous performance 生成当前 performance |
-| Score-only EPR + Cold-start EPR | 20–25% | 无 performance context 时的渲染能力 |
-| Intra-phrase EPR | 10–15% | 解决长乐句输出难度 |
-| EPR attribute generation（$g$-mask） | 10–15% | 用 2.3 中定义的 $g$ mask 拆解表达属性，监督更干净 |
-| Language / QA replay（可选） | 0–8% | 仅在格式遗忘时加入 |
-
-如果 EPR 分支训练后 parse rate、measure continuity、event validity 没有下降，可以不加 Language replay；如果下降，优先 replay **Knowledge QA / repair**，其次才是 continuation。
-
-保存 checkpoint：
-
-```
-spire-sft-epr
-```
-
-### 5.3 Step 2b：CSR Branch SFT
-
-从 `spire-sft-language` 初始化，只训练 CSR 相关任务。不要混入 EPR。
-
-推荐比例：
-
-| 任务类型 | 比例 | 说明 |
-|---|---|---|
-| Head prediction（单乐句 + 投票） | 15–20% | 每个乐句独立预测 head |
-| Head-conditioned CSR | 45–55% | CSR 主任务 |
-| CSR attribute recovery（$f$-mask） | 20–30% | 用 2.3 中定义的 $f$ mask 补足 score 属性恢复能力 |
-| Language / QA replay（可选） | 0–8% | 仅在格式遗忘时加入 |
-
-保存 checkpoint：
-
-```
-spire-sft-csr
-```
-
-### 5.4 为什么不混成一个 SFT
-
-EPR、CSR、Language 不应该作为同一个 SFT 的固定比例混合，原因：
-
-| 问题 | 说明 |
+| $\sigma_{M_k}, \psi_{M_k}, \phi_{M_k}$ | 第 $k$ 个逻辑小节 |
+| $\sigma_{H_k}, \psi_{H_k}, \phi_{H_k}$ | 第 $k$ 个启发式乐句 |
+| $\sigma_{\text{head}}$ | ABCX 头部（调号、拍号、速度、metadata 等） |
+| $\sigma_{M_{i..j}}$ | 从第 $i$ 到第 $j$ 个连续小节的 ABCX span |
+| $\psi_{M_{i..j}}$ | 从第 $i$ 到第 $j$ 个连续小节的 score MIDI span |
+| $\phi_{M_{i..j}}$ | 从第 $i$ 到第 $j$ 个连续小节的 performance span |
+
+### 2.3 Mask 函数
+
+| 记号 | 含义 |
 |---|---|
-| 目标方向相反 | EPR 是 $\Sigma \rightarrow \Phi$，CSR 是 $\Phi \rightarrow \Sigma$ |
-| 输出语言不同 | EPR 主要输出 MIDI-TSV，CSR 主要输出 ABCX |
-| 评价指标不同 | EPR 看 performance 对齐与表达性，CSR 看规范 score 恢复 |
-| 数据质量门槛不同 | Language 可用未配对数据，EPR/CSR 需要高质量配对 |
-| 分支用途不同 | 最终部署可能只需要 EPR 或只需要 CSR |
+| $f(\sigma)$ | 对 ABCX 乐谱做 mask |
+| $u(\psi)$ | 对 score MIDI-TSV 做 mask |
+| $g(\phi)$ | 对 performance MIDI-TSV 做 mask |
 
-正确结构是：
+推荐的 mask 变体：
 
-```
-Language Learning SFT
-  ├── EPR Branch SFT
-  └── CSR Branch SFT
-```
+| 语言 | 变体 | 说明 |
+|---|---|---|
+| $\Sigma$ | `acc`, `treble`, `bass`, `label` | 恢复升降号、声部、文本标记 |
+| $\Psi$ | `timing`, `duration`, `structure` | 恢复 score MIDI 的时值与结构字段 |
+| $\Phi$ | `timing`, `velocity`, `duration`, `pedal` | 恢复 expressive 属性 |
 
-而不是：
+> 这里用 $\Psi$ / $\psi$ 表示 score MIDI，避免继续使用 `phi0` 这种容易和 performance 混淆的命名。
 
-```
-Single SFT = EPR + CSR + Language
-```
+## 3. PianoCoRe 数据与任务边界
 
-### 5.5 最小可用版本（MVP）
+当前 EPR 主实验依赖以下对象：
 
-如果只做 V1，分两步：
+- `score_abcx_path`：ABCX 乐谱
+- `score_midi_path` / `refined_score_midi_path`：score MIDI
+- `refined_performance_midi_path`：performance MIDI
+- `refined_alignment_path`：`align.npz`
 
-**Step 1: Language Learning**
+配对训练的主力子集仍然是：
 
-1. $\sigma_{\text{head}} + \sigma_{H_k} \rightarrow \sigma_{H_{k+1}}$（Score continuation）
-2. $g(\phi_{H_k}) \rightarrow \phi_{H_k}$（Performance language mask）
-3. Knowledge QA / validation / repair
+| 集合 | 含义 | 用途 |
+|---|---|---|
+| CoRe-A | 有 refined note-level 对齐的 score-performance pairs | 可用于扩量 |
+| CoRe-A* | 高置信 refined aligned subset | EPR 主训练集 |
 
-**Step 2a: EPR Branch**
+未配对或弱配对数据仍然有价值，但主要用于 Language Learning 的 mask / QA / repair，不再用于 continuation。
 
-1. $\sigma_{\text{head}} + \sigma_{H_{k-1}} + \sigma_{H_k} + \sigma_{H_{k+1}} \rightarrow \phi_{H_k}$（Score-only EPR）
-2. $\sigma_{\text{head}} + \sigma_{H_{k-1}} + \sigma_{H_k} + \sigma_{H_{k+1}} + \phi_{H_{k-1}} \rightarrow \phi_{H_k}$（Score-conditioned EPR 主任务）
-3. $\sigma_{\text{head}} + \sigma_{H_k} + g(\phi_{H_k}) \rightarrow \phi_{H_k}$（EPR attribute generation）
+## 4. 数据挖掘与对齐流程
 
-**Step 2b: CSR Branch** 可以后置；如果 V1 目标是 EPR，先不训练 CSR。
+假设所有 score `mxl/xml` 已经生成了对应的原始 `ABCX`。
 
----
+### 4.1 Step 1：从 Score MIDI 定义逻辑小节
 
-## 6. 训练经验与注意事项
+输入：
 
-1. **不要把 CPT 当成万能领域增强**——CPT 可能损伤通用指令能力
-2. **分阶段理解数据质量与数量**——Step 1 Language Learning 可以大量使用合法、未污染数据；Step 2 EPR/CSR 分支更强调高质量配对与对齐
-3. **结构化输出任务单独评估合法性**——不能只看 loss，要看 parse rate、duration conservation、measure boundary、event consistency
-4. **LoRA / QLoRA 足够作为第一阶段实验**
-5. **显式标记任务类型**——用 `<task>score_to_performance</task>` 等，不要把所有任务混在一个 prompt 模板里
-6. **输出长度控制**——V1 最大 input 8 measures / output 8 measures，第二版再扩展到 16
-7. **CSR head 投票**——单乐句独立预测 head 后按字段投票，不做大窗口联合预测
+- score MIDI
 
----
+输出：
 
-## 7. DPO / 偏好优化
+- 一个 piece-level JSON，定义这首曲子的“逻辑小节”
 
-### 7.1 阶段判断
+核心目标：
 
-```
-EPR Branch SFT: 解决"能不能生成合法、对齐、完整的 performance"
-EPR Branch DPO: 解决"哪个 render 更像人类偏好的演奏"
-```
+- 用 score MIDI 作为小节边界主轴；
+- 得到稳定的 `M1, M2, ...` 逻辑小节编号；
+- 记录每个逻辑小节的起止 tick、时长、拍号相关信息；
+- 为后续 ABCX 与 performance 侧提供统一对齐坐标系。
 
-> 先 SFT，把 score-to-performance 和 attribute generation 做稳；再用 DPO 优化合法候选之间的表达性偏好。
+建议 JSON 字段：
 
-### 7.2 DPO 触发条件
-
-满足以下条件后再做 DPO：
-
-- parse success rate > 95%
-- note alignment error 较低
-- measure boundary 基本正确
-- score-conditioned rendering 已能生成完整 $\phi_{H_k}$
-- 同一输入能采样出多个差异明显的候选
-- 能定义 chosen / rejected 的偏好规则或人工标注标准
-
-### 7.3 DPO 数据构造
-
-| 方式 | chosen | rejected | 说明 |
-|---|---|---|---|
-| 自动劣化 | 真实 $\phi_{H_k}$ | 量化/平速度/去踏板/无 rubato 的 $\phi_{H_k}$ | 70%，易构造 |
-| Reference vs Generated | 真实 $\phi_{H_k}$ | 模型生成的 $\phi_{H_k}$ | 20% |
-| 人工标注 | 专家偏好 render | 较差 render | 10% |
-
-> DPO 数据中 chosen 和 rejected 都必须是可解析的 MIDI-TSV。格式问题用 SFT/repair 解决；DPO 用于**合法候选之间的偏好排序**。V1 可从 5k–20k preference pairs 开始。
-
-### 7.4 DPO 优化维度
-
-| 维度 | 说明 |
-|---|---|
-| 合法性 | MIDI-TSV 可解析、event 顺序正确 |
-| 对齐性 | note 与 score 对齐，不漏音、不多音 |
-| 表达性 | velocity 有层次、timing 有自然 rubato |
-| 踏板质量 | 不糊、不乱、不频繁异常切换 |
-| 风格一致性 | 与前一乐句 $\phi_{H_{k-1}}$ 连续 |
-| 乐句结构 | phrase ending 有收束，高潮处有推进 |
-
----
-
-## 9. 实验设计与评估
-
-### 9.1 实验目标
-
-通过对比实验回答以下问题：
-1. **Language Learning 是否必要？** 直接 EPR vs Language → EPR
-2. **粒度如何选择？** Measure-level vs Phrase-level
-3. **最优训练路径是什么？** 根据实验结果决定最终策略
-
-### 9.2 模型状态定义
-
-| 模型 | 训练路径 | 说明 |
-|------|---------|------|
-| **M0** | Qwen3.5-4B | 基础模型 |
-| | | |
-| **Measure-level 路径** | | |
-| **M_M1** | M0 → Measure EPR | 直接学小节级 EPR（无 Language Learning） |
-| **M_M2** | M0 → Measure Lang → Measure EPR | 先学小节级语言，再学 EPR |
-| M_M3 | M0 → Measure Lang+QA → Measure EPR | 加入 QA/validation（V2） |
-| | | |
-| **Phrase-level 路径** | | |
-| **M_H1** | M0 → Phrase EPR | 直接学乐句级 EPR（无 Language Learning） |
-| **M_H2** | M0 → Phrase Lang → Phrase EPR | 先学乐句级语言，再学 EPR |
-| M_H3 | M0 → Phrase Lang+QA → Phrase EPR | 加入 QA/validation（V2） |
-
-**V1 优先级**：只训练 **M_M1, M_M2, M_H1, M_H2** 四个核心模型。
-
-### 9.3 训练任务定义
-
-#### Measure Lang（小节级语言学习）
-
-```python
-Measure_Lang = {
-    # Score Language
-    "score_measure_continuation": {
-        "input": "σ_head + σ_{M_k}",
-        "output": "σ_{M_{k+1}}",
-        "weight": 0.25,
-    },
-    "score_measure_mask": {
-        "input": "σ_head + f(σ_{M_k})",  # f ∈ {acc, treble, bass, label}
-        "output": "σ_{M_k}",
-        "weight": 0.25,
-    },
-    
-    # Performance Language
-    "perf_measure_continuation": {
-        "input": "φ_{M_k}",
-        "output": "φ_{M_{k+1}}",
-        "weight": 0.25,
-    },
-    "perf_measure_mask": {
-        "input": "g(φ_{M_k})",  # g ∈ {timing, velocity, duration, pedal}
-        "output": "φ_{M_k}",
-        "weight": 0.25,
-    },
+```json
+{
+  "piece_id": "...",
+  "measures": [
+    {
+      "measure_id": "M1",
+      "start_tick": 0,
+      "end_tick": 1920,
+      "duration_tick": 1920
+    }
+  ]
 }
 ```
 
-#### Phrase Lang（乐句级语言学习）
+### 4.2 Step 2：识别 ABCX 乐句并与逻辑小节对齐
 
-```python
-Phrase_Lang = {
-    # Score Language
-    "score_phrase_continuation": {
-        "input": "σ_head + σ_{H_k}",
-        "output": "σ_{H_{k+1}}",
-        "weight": 0.25,
-    },
-    "score_phrase_mask": {
-        "input": "σ_head + f(σ_{H_k})",
-        "output": "σ_{H_k}",
-        "weight": 0.25,
-    },
-    
-    # Performance Language
-    "perf_phrase_continuation": {
-        "input": "φ_{H_k}",
-        "output": "φ_{H_{k+1}}",
-        "weight": 0.25,
-    },
-    "perf_phrase_mask": {
-        "input": "g(φ_{H_k})",
-        "output": "φ_{H_k}",
-        "weight": 0.25,
-    },
-}
-```
+输入：
 
-#### Measure EPR（小节级演奏渲染）
+- 原始 ABCX
+- Step 1 输出的逻辑小节 JSON
 
-```python
-Measure_EPR = {
-    "measure_epr_main": {
-        "input": "σ_head + σ_{M_{k-1}} + σ_{M_k} + σ_{M_{k+1}} + φ_{M_{k-1}}",
-        "output": "φ_{M_k}",
-        "weight": 0.8,
-    },
-    "measure_epr_coldstart": {
-        "input": "σ_head + σ_{M_1} + σ_{M_2}",
-        "output": "φ_{M_1}",
-        "weight": 0.2,
-    },
-}
-```
+处理目标：
 
-#### Phrase EPR（乐句级演奏渲染）
+1. 用启发式算法识别原始 ABCX 的乐句；
+2. 去掉原始 ABCX body 中已有的小节号噪声，仅保留每个小节的纯内容；
+3. 让每个 ABCX 小节内容对齐到一个 score MIDI 逻辑小节；
+4. 如果存在多余音符或多余小节，则截断到逻辑小节坐标系；
+5. 生成可还原的乐句结构表示。
 
-```python
-Phrase_EPR = {
-    "phrase_epr_main": {
-        "input": "σ_head + σ_{H_{k-1}} + σ_{H_k} + σ_{H_{k+1}} + φ_{H_{k-1}}",
-        "output": "φ_{H_k}",
-        "weight": 0.8,
-    },
-    "phrase_epr_coldstart": {
-        "input": "σ_head + σ_{H_1} + σ_{H_2}",
-        "output": "φ_{H_1}",
-        "weight": 0.2,
-    },
-}
-```
+目标 ABCX 结构形如：
 
-### 9.4 V1 实验方案
-
-**训练模型**（4个）：
-1. **M_M1**: M0 → Measure EPR（直接）
-2. **M_M2**: M0 → Measure Lang → Measure EPR
-3. **M_H1**: M0 → Phrase EPR（直接）
-4. **M_H2**: M0 → Phrase Lang → Phrase EPR
-
-**对比维度**：
-- **M_M1 vs M_M2**：Measure-level 的 Language Learning 作用
-- **M_H1 vs M_H2**：Phrase-level 的 Language Learning 作用
-- **M_M1 vs M_H1**：粒度对直接 EPR 的影响
-- **M_M2 vs M_H2**：粒度对完整路径的影响
-
-**数据来源**：
-- 使用相同的 PianoCoRe 配对数据集
-- Measure-level：切分成小节级样本
-- Phrase-level：切分成乐句级样本（4-8 小节）
-- 数据量由数据集本身决定，不人为控制 token 数
-
-**训练配置**：
-- Base model: Qwen3.5-4B
-- Method: LoRA (r=64, alpha=128)
-- Learning rate: 2e-5
-- Epochs: 3
-
-**决策逻辑**：
-- 如果 M_M2 >> M_M1 且 M_H2 >> M_H1 → Language Learning 有效
-- 如果 M_M1 ≈ M_M2 且 M_H1 ≈ M_H2 → Language Learning 无效，直接 EPR
-- 如果 Measure >> Phrase → 选择 Measure-level
-- 如果 Phrase >> Measure → 选择 Phrase-level
-
----
-
-## 10. 术语定义
-
-| 缩写 | 全称 | 含义 | 公式 |
-|---|---|---|---|
-| **EPR** | Expressive Performance Rendering | 从 score 生成 expressive performance | $\Sigma \rightarrow \Phi$ |
-| **CSR** | Canonical Score Reconstruction | 从 performance 恢复规范 score | $\Phi \rightarrow \Sigma$ |
-| **PM2S** | Performance MIDI-to-Score Conversion | 已有 MIR 术语（Liu et al. ISMIR 2022），与 CSR 类似但偏工程命名 | — |
-| **M_M1** | Measure Model 1 | 直接 Measure EPR（无 Language Learning） | M0 → Measure EPR |
-| **M_M2** | Measure Model 2 | Measure Lang → Measure EPR | M0 → Measure Lang → Measure EPR |
-| **M_H1** | pHrase Model 1 | 直接 Phrase EPR（无 Language Learning） | M0 → Phrase EPR |
-| **M_H2** | pHrase Model 2 | Phrase Lang → Phrase EPR | M0 → Phrase Lang → Phrase EPR |
-
-> CSR 与 EPR 对称，强调从带有演奏偏差的 performance 中恢复规范化、可记谱的 score 表示。PM2S 是已有文献术语但影响力有限（~20 次引用），可在 related work 中提及，不作为主任务名。
-> 
-> 模型命名：M = Measure, H = pHrase（避免与 MIDI-TSV 中的 H=phrase header 混淆），数字表示训练路径（1=直接EPR，2=Lang→EPR）。
-
-
-
-还有一个步骤能不能顺便做了，形成一个完整的挖掘算法，就是：
-
-假设所有score mxl/xml 都已经生成了对应的abcx
-Step 1: 从 Score MIDI 定义"逻辑小节"，输出一个json
-Step 2: 使用启发式算法识别原始 abcx 的乐句。并根据score midi json对齐相应的abcx，现在abcx body的结构如下：
-
+```text
 H1\t|:M1|M2|$M3|M4:|$
 M1\t!p!"^Allegro ma con tenerezza" ([ce]4 ; z4 ; "^con pedale" z A,A,A,
 M2\t!<(! [df]4 ; z4 ; z A,A,A,
@@ -611,19 +146,364 @@ H2\tM5|M6|$M7|...
 M5\t(c'e){/g}(fe) ; z4 ; A,,4)
 M6\t(e2 ^d) z ; z4 ; z (B,,B,A,
 M7\t(b=d){/f}(ed) ; z4 ; ^G,4)
+```
 
-就是去掉小节号，每个小节的内容对齐一个score midi小节，如果有多余的音符或者小节则去掉
-除此之外，添加启发式乐句结构，包括标题 + 乐句结构，要求abcx通过乐句还原的方式能够复现原始的abcx，乐句结构使用 MX表示相应的小节内容，使用 $ 表示换行
-然后我们将乐句结构（每个小节分别在什么乐句里）也写入json中
+其中：
 
-Step 3: Performance 根据json和相应的npz对齐，自动检测repeat，并使用相同的小节。注意根据小节分配乐句，即如果当前小节所在乐句与前一小节不同，或者当前小节是乐句的第一个小节，则添加乐句符号。
+- `Hk` 行保存乐句结构；
+- `Mk` 行保存该小节的实际 ABCX 内容；
+- `M` 表示引用对应小节内容；
+- `$` 表示换行；
+- `Hk + 所有 Mk` 必须能够**无损还原**规范化后的 aligned ABCX。
 
-这样performance midi 既有小节也有乐句。同时 performance 可以与 score 完全对齐
+建议把以下信息写回 JSON：
 
+```json
+{
+  "phrases": [
+    {
+      "phrase_id": "H1",
+      "structure": "|:M1|M2|$M3|M4:|$",
+      "measures": ["M1", "M2", "M3", "M4"]
+    }
+  ],
+  "measure_to_phrase": {
+    "M1": "H1",
+    "M2": "H1"
+  }
+}
+```
 
+### 4.3 Step 3：根据 JSON 与 `align.npz` 对齐 performance
 
-PianoCoRe/aligned/Arndt,_Felix/Desecration
+输入：
 
-这首曲子有点问题：tsv 与 abcx_aligned 不对齐
-tsv 中 M1 是 FGA,C
-而 abcx 中 M1 不存在，从M2开始，而M2都是休止符，所以真正M3 才对应 tsv的M1
+- performance MIDI / performance MIDI-TSV
+- Step 2 输出的 JSON
+- `align.npz`
+
+处理目标：
+
+1. 根据 score 逻辑小节把 performance 分配到相同的 `M1, M2, ...`；
+2. 自动检测 repeat，并复用相同的小节定义；
+3. 继承 `measure_to_phrase`，把 performance 的每个 measure 分配到对应乐句；
+4. 如果当前小节所在乐句与前一小节不同，或者当前小节是该乐句第一个小节，则插入乐句符号。
+
+输出目标：
+
+- `\psi_{M_k}`：score MIDI 的 measure serialization
+- `\phi_{M_k}`：performance MIDI 的 measure serialization
+- `\psi_{H_k}` / `\phi_{H_k}`：按 `measure_to_phrase` 聚合后的 phrase serialization
+
+### 4.4 统一约束
+
+- 所有三侧（ABCX / score MIDI / performance MIDI）共用同一套逻辑小节编号；
+- phrase 结构以 score 为主轴，performance 继承分配；
+- 跨 phrase 的 span 完全允许，不要求 phrase 间严格独立；
+- 数据构建优先保证“可复现、可还原、可验证”，其次再做启发式美化。
+
+## 5. 任务体系
+
+本文只保留三类任务：
+
+1. Language Learning
+2. EPR 主实验
+3. EPR baseline / ablation
+
+CSR 可继续作为后续分支，但不作为当前文档主线。
+
+### 5.1 Language Learning：仅保留 mask / QA / repair
+
+Language Learning 不再包含 continuation。
+
+保留任务：
+
+| 子任务 | 公式 | 说明 |
+|---|---|---|
+| Score mask | $\sigma_{\text{head}} + f(\sigma_{M_k}) \rightarrow \sigma_{M_k}$ | 学 ABCX 结构恢复 |
+| Score-MIDI mask | $u(\psi_{M_k}) \rightarrow \psi_{M_k}$ | 学 score MIDI-TSV 字段恢复 |
+| Performance mask | $g(\phi_{M_k}) \rightarrow \phi_{M_k}$ | 学 expressive 属性恢复 |
+| QA / validation / repair | 规则问答、合法性判断、格式修复 | 钉住边界规则 |
+
+建议保留 measure-level mask 为主，phrase-level mask 作为可选增强，而不是主配方。
+
+推荐比例：
+
+| 任务 | 比例 |
+|---|---|
+| Score mask + Score-MIDI mask | 40-50% |
+| Performance mask | 35-45% |
+| QA / validation / repair | 10-20% |
+
+保存 checkpoint：
+
+```text
+spire-sft-language-mask
+```
+
+### 5.2 EPR 主实验：Span-ABCX2PM
+
+这是当前最重要的主实验。
+
+#### 主任务定义
+
+```text
+ABCX2PM-main:
+σ_head + σ_M_prev + σ_M_{i..j} + φ_M_prev -> φ_M_{i..j}
+```
+
+其中：
+
+- `i, j` 动态决定；
+- 从 `j=i` 开始不断扩展；
+- 只要完整样本不超过 `max_length=1536`，就继续添加长度；
+- 不需要额外看下一个小节；
+- 允许跨 phrase；
+- 只有 `coldstart` 和 `main`，没有 `ending`。
+
+冷启动版本：
+
+```text
+ABCX2PM-coldstart:
+σ_head + σ_M_{1..j} -> φ_M_{1..j}
+```
+
+#### 设计理由
+
+- 比固定 3-measure window 更接近真实 rendering；
+- 比 phrase-based EPR 更少依赖启发式 phrase 边界质量；
+- token 利用率更高，重复上下文更少；
+- 允许模型直接学习跨乐句的连续表达结构。
+
+### 5.3 EPR 主实验：Span-SM2PM
+
+这是第二个主实验，与 `ABCX2PM` 互补。
+
+#### 主任务定义
+
+```text
+SM2PM-main:
+ψ_M_prev + ψ_M_{i..j} + φ_M_prev -> φ_M_{i..j}
+```
+
+冷启动版本：
+
+```text
+SM2PM-coldstart:
+ψ_M_{1..j} -> φ_M_{1..j}
+```
+
+与 `ABCX2PM` 相同：
+
+- 只有 `coldstart` 和 `main`；
+- 不设 `ending`；
+- `j` 按 `max_length=1536` 动态扩展；
+- 允许跨 phrase。
+
+#### 设计理由
+
+- 把“乐谱抽象结构理解”和“演奏表达生成”之间加入一个更接近 performance 语言的中间表征；
+- 可以直接研究 `score MIDI -> expressive performance` 的映射；
+- 在一些场景下比纯 ABCX 输入更利于 timing / duration 对齐。
+
+### 5.4 EPR baseline / ablation
+
+以下任务不再是主实验，而是对照实验：
+
+| 任务 | 公式 | 角色 |
+|---|---|---|
+| Measure EPR | $\sigma_{\text{head}} + \sigma_{M_{k-1}} + \sigma_{M_k} + \sigma_{M_{k+1}} + \phi_{M_{k-1}} \rightarrow \phi_{M_k}$ | baseline |
+| Phrase EPR | $\sigma_{\text{head}} + M_{\text{prev}} + \sigma_{H_k} + M_{\text{next}} + \phi_{M_{\text{prev}}} \rightarrow \phi_{H_k}$ | baseline |
+
+这些旧任务的价值主要是：
+
+- 提供和已有 pipeline 的直接可比性；
+- 验证 span 方案是否真的优于固定边界方案；
+- 在主实验 early failure 时提供稳定 fallback。
+
+## 6. Span 样本构造策略
+
+### 6.1 基本规则
+
+对 `ABCX2PM` 与 `SM2PM`，都采用同一套 span 采样：
+
+1. 固定起点 `i`
+2. 从 `j=i` 开始
+3. 不断尝试加入 `M_{j+1}`
+4. 若完整样本 token 长度仍不超过 `1536`，则接受并继续扩展
+5. 一旦超过 `1536`，回退到上一个合法 `j`
+6. 为该起点 `i` 只保留一个“最长合法 span”
+
+完整长度应按真实训练文本估算，而不是只按 target 长度估算。
+
+### 6.2 `task_type`
+
+只保留：
+
+| 类型 | 定义 |
+|---|---|
+| `coldstart` | 没有 previous performance context 的开头 span |
+| `main` | 有 `M_prev` 与 `φ_M_prev` 的普通 span |
+
+不再单独定义 `ending`。
+
+### 6.3 窗口重合策略
+
+默认建议：
+
+- **主实验默认不做 target overlap**
+- 对于一个 span `[i, j]`，下一个 span 从 `j + 1` 开始
+- 也就是说，下一个样本只通过 `M_prev = M_j` 与 `φ_M_prev = φ_M_j` 继承上下文
+
+理由：
+
+- 已经有 `M_prev` / `φ_M_prev` 作为连续性桥梁；
+- span 本身较长，再做大量 overlap 会明显增加冗余；
+- 作为主实验，更应优先观察“长 span 本身”的效果，而不是把数据量堆在重复区域上。
+
+可选增强：
+
+- 作为额外 ablation，可加入少量重叠样本，例如 10-20%；
+- 如果确实要做 overlap，优先考虑“轻重叠”，而不是强制 phrase-aware 回退很多小节；
+- 不建议把“下一个样本永远从上一个 `M_j` 所在乐句的前一小节开始”作为默认规则，因为这会引入较重冗余，并把采样偏置绑到启发式 phrase 边界上。
+
+## 7. 统一样本格式
+
+建议统一为 instruction/chat 格式，但在字段层面明确保留不同输入视图。
+
+### 7.1 ABCX2PM
+
+```json
+{
+  "task": "epr_span",
+  "variant": "abcx2pm",
+  "task_type": "main",
+  "instruction": "Render the target score span into expressive performance.",
+  "score_header": "σ_head",
+  "score_snip": "σ_M_prev + σ_M_{i..j}",
+  "perf_context": "φ_M_prev",
+  "perf_target": "φ_M_{i..j}"
+}
+```
+
+### 7.2 SM2PM
+
+```json
+{
+  "task": "epr_span",
+  "variant": "sm2pm",
+  "task_type": "main",
+  "instruction": "Render the target score-MIDI span into expressive performance.",
+  "score_midi_snip": "ψ_M_prev + ψ_M_{i..j}",
+  "perf_context": "φ_M_prev",
+  "perf_target": "φ_M_{i..j}"
+}
+```
+
+说明：
+
+- `SM2PM` 不建议把 `ψ` 伪装成 `score_snip`；
+- 既然它是主实验，就应在 schema 上明确区分 ABCX 视图与 score-MIDI 视图。
+
+## 8. 推荐训练流程
+
+### 8.1 Step 1：Language Learning
+
+训练内容：
+
+- Score mask
+- Score-MIDI mask
+- Performance mask
+- QA / validation / repair
+
+不包含：
+
+- score continuation
+- performance continuation
+- EPR rendering
+
+保存：
+
+```text
+spire-sft-language-mask
+```
+
+### 8.2 Step 2：EPR Branch
+
+从 `spire-sft-language-mask` 初始化，训练：
+
+- `ABCX2PM-main`
+- `ABCX2PM-coldstart`
+- `SM2PM-main`
+- `SM2PM-coldstart`
+
+建议把这两类主实验作为主要训练流，而不是把旧的 measure / phrase EPR 放在中心。
+
+推荐比例：
+
+| 任务 | 比例 |
+|---|---|
+| `ABCX2PM` | 45-55% |
+| `SM2PM` | 35-45% |
+| baseline / replay | 0-15% |
+
+若模型出现明显格式遗忘，可少量加入：
+
+- mask replay
+- QA / repair replay
+
+优先 replay 这些结构性任务，而不是回到 continuation。
+
+保存：
+
+```text
+spire-sft-epr-span
+```
+
+### 8.3 Step 3：Baseline / Ablation
+
+额外训练或对照：
+
+- `measure_epr`
+- `phrase_epr`
+
+它们的职责是做比较，不再作为主线。
+
+## 9. 评估设计
+
+### 9.1 基础合法性
+
+| 指标 | 说明 |
+|---|---|
+| parse success rate | 输出是否能被对应 parser 接受 |
+| measure continuity | span 内小节是否连续、无遗漏、无重复 |
+| event validity | note / pedal / timing 是否越界 |
+| output boundary correctness | 是否只输出目标 span，不泄漏 prompt 结构 |
+
+### 9.2 Rendering 指标
+
+| 指标 | 说明 |
+|---|---|
+| pitch consistency | 与 score / target 的音高匹配程度 |
+| onset MAE | onset 偏差 |
+| duration MAE | duration 偏差 |
+| velocity MAE | velocity 偏差 |
+| pedal F1 / MAE | 踏板误差 |
+
+### 9.3 Span 特有分析
+
+建议增加：
+
+| 字段 / 指标 | 用途 |
+|---|---|
+| `span_measure_count` | 观察模型对不同 span 长度的稳定性 |
+| `crosses_phrase_boundary` | 比较跨 phrase 与不跨 phrase 的效果 |
+| `variant` | 分析 `abcx2pm` 与 `sm2pm` 的差异 |
+
+## 10. 当前结论
+
+1. 当前 EPR 主实验应从“固定 measure / phrase window”转向“动态 measure span”。
+2. `ABCX2PM` 与 `SM2PM` 是主实验；旧 `measure_epr` / `phrase_epr` 是 baseline。
+3. Language Learning 只保留 mask / QA / repair，不再保留 continuation。
+4. `score MIDI` 应使用新符号 $\Psi$ / $\psi$，不要继续使用 `phi0`。
+5. span 构造默认不做 target overlap；若要做 overlap，应作为额外 ablation，而不是主配方。

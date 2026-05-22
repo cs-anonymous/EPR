@@ -23,8 +23,12 @@ from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from aligned_abcx_format import AlignedAbcxError, build_aligned_abcx
-from lm_midi_tsv import midi_pitch_to_logic_note, semantic_event_to_tsv_rows, tsv_row_to_line
+try:
+    from scripts.aligned_abcx_format import AlignedAbcxError, build_aligned_abcx
+    from scripts.lm_midi_tsv import midi_pitch_to_logic_note, semantic_event_to_tsv_rows, tsv_row_to_line
+except ModuleNotFoundError:
+    from aligned_abcx_format import AlignedAbcxError, build_aligned_abcx
+    from lm_midi_tsv import midi_pitch_to_logic_note, semantic_event_to_tsv_rows, tsv_row_to_line
 
 
 @dataclass
@@ -1012,6 +1016,70 @@ def generate_performance_tsv_with_phrases(
         f.write("\n".join(lines))
 
     return True
+
+
+def build_score_entries(score_structure: ScoreStructure) -> list[tuple[int | None, str, int, int]]:
+    """Build phrase/measure time entries directly from Score MIDI structure.
+
+    The returned format matches `generate_performance_tsv_with_phrases()`:
+    - `(None, phrase_id, start_tick, end_tick)` for phrase headers
+    - `(measure_num, phrase_id, start_tick, end_tick)` for measure spans
+    """
+    if not score_structure.measures:
+        return []
+
+    measure_map = {measure.measure_num: measure for measure in score_structure.measures}
+    phrase_bounds: dict[str, tuple[int, int]] = {}
+    for phrase in score_structure.phrases:
+        if not phrase.measures:
+            continue
+        first = measure_map.get(phrase.measures[0])
+        last = measure_map.get(phrase.measures[-1])
+        if first is None or last is None:
+            continue
+        phrase_bounds[phrase.phrase_id] = (
+            round(first.start_time * 100),
+            round(last.end_time * 100),
+        )
+
+    entries: list[tuple[int | None, str, int, int]] = []
+    current_phrase = None
+    for measure in score_structure.measures:
+        phrase_id = score_structure.measure_to_phrase.get(measure.measure_num, "H1")
+        if phrase_id != current_phrase:
+            start_tick, end_tick = phrase_bounds.get(
+                phrase_id,
+                (round(measure.start_time * 100), round(measure.end_time * 100)),
+            )
+            entries.append((None, phrase_id, start_tick, end_tick))
+            current_phrase = phrase_id
+        entries.append(
+            (
+                measure.measure_num,
+                phrase_id,
+                round(measure.start_time * 100),
+                round(measure.end_time * 100),
+            )
+        )
+    return entries
+
+
+def generate_score_tsv_with_phrases(
+    score_midi_path: Path,
+    score_structure: ScoreStructure,
+    output_tsv: Path,
+    midi_tsv,
+) -> bool:
+    """Generate aligned score MIDI-TSV using score-derived phrase/measure spans."""
+    score_entries = build_score_entries(score_structure)
+    if not score_entries:
+        return False
+    return generate_performance_tsv_with_phrases(
+        score_midi_path,
+        score_entries,
+        output_tsv,
+        midi_tsv,
+    )
 
 
 def _build_score_structure(
