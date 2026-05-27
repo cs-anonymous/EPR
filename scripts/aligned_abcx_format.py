@@ -24,8 +24,8 @@ def score_phrase_label(phrase_index: int) -> str:
     return f"<H><V{phrase_index % 128:03d}>"
 
 
-def score_measure_label(measure_local_index: int) -> str:
-    return f"<M><V{measure_local_index:03d}>"
+def score_measure_label(measure_index: int) -> str:
+    return f"<M><V{measure_index % 128:03d}>"
 
 
 def read_abcx_lines(abcx_path: Path) -> list[str]:
@@ -282,11 +282,13 @@ def build_aligned_abcx(
     }
 
     out_lines = list(header)
+    global_measure_index = 0
     for phrase_index, (_, phrase_measures, has_linebreak) in enumerate(phrase_groups):
         out_lines.append(score_phrase_label(phrase_index))
-        for measure_local_index, measure_num in enumerate(phrase_measures):
+        for measure_num in phrase_measures:
             content = measure_map.get(measure_num, ". ; .")
-            out_lines.append(f"{score_measure_label(measure_local_index)}{content}")
+            out_lines.append(f"{score_measure_label(global_measure_index)}{content}")
+            global_measure_index += 1
         if has_linebreak:
             out_lines.append("$")
     return "\n".join(out_lines) + "\n"
@@ -305,12 +307,14 @@ def build_orphan_aligned_abcx(
 
     out_lines = list(header)
     phrase_index = 0
+    global_measure_index = 0
     for i in range(0, len(raw_measures), phrase_size):
         out_lines.append(score_phrase_label(phrase_index))
-        for measure_local_index, content in enumerate(raw_measures[i:i + phrase_size]):
+        for content in raw_measures[i:i + phrase_size]:
             out_lines.append(
-                f"{score_measure_label(measure_local_index)}{simplify_measure_content(content, layout)}"
+                f"{score_measure_label(global_measure_index)}{simplify_measure_content(content, layout)}"
             )
+            global_measure_index += 1
         phrase_index += 1
     return "\n".join(out_lines) + "\n"
 

@@ -10,33 +10,19 @@ from pathlib import Path
 
 from transformers import AddedToken, AutoTokenizer
 
-
-def lm_midi_tokens() -> list[str]:
-    tokens: list[str] = []
-    tokens += [f"<N{i:03d}>" for i in range(128)]
-    tokens += [f"<V{i:03d}>" for i in range(128)]
-    tokens += [f"<T{i:03d}>" for i in range(256)]
-    tokens += [
-        "<MIDI>",
-        "</MIDI>",
-        "<EOS_MIDI>",
-        "<NIL>",
-        "<EXT>",
-        "<EXD>",
-        "<EXO>",
-        "<M>",
-        "<H>",
-        "<P>",
-        "<P1>",
-        "<P2>",
-    ]
-    return tokens
+from scripts.lm_midi_tokens import lm_midi_vocabulary
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-tokenizer", type=Path, default=Path("Qwen3.5-4B"))
     parser.add_argument("--out-tokenizer", type=Path, default=Path("Qwen3.5-4B-LM-MIDI"))
+    parser.add_argument(
+        "--mode",
+        choices=["performance", "full"],
+        default="full",
+        help="LM-MIDI vocabulary mode. 'full' adds the exact 796-token vocabulary.",
+    )
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
 
@@ -46,9 +32,10 @@ def main() -> None:
         shutil.rmtree(args.out_tokenizer)
 
     tokenizer = AutoTokenizer.from_pretrained(str(args.base_tokenizer), trust_remote_code=True)
+    tokens = lm_midi_vocabulary(mode=args.mode)
     added_tokens = [
         AddedToken(token, single_word=False, lstrip=False, rstrip=False, normalized=False)
-        for token in lm_midi_tokens()
+        for token in tokens
     ]
     added = tokenizer.add_tokens(added_tokens)
     args.out_tokenizer.mkdir(parents=True)
@@ -56,6 +43,7 @@ def main() -> None:
 
     manifest = {
         "base_tokenizer": str(args.base_tokenizer),
+        "mode": args.mode,
         "added_tokens": added,
         "total_lm_midi_tokens": len(added_tokens),
         "vocab_size": len(tokenizer),

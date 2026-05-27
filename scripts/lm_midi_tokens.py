@@ -27,8 +27,159 @@ NOTE_BASE = {
     "B": 11,
 }
 
+ANNOTATED_EVENT_TOKENS = [
+    "<A>",
+    "<AL>",
+    "<OR>",
+    "<ORL>",
+    "<D>",
+    "<DL>",
+    "<RS>",
+    "<RSL>",
+    "<RE>",
+    "<REL>",
+    "<EX>",
+    "<EXL>",
+    "<FM>",
+    "<PM>",
+    "<TP>",
+    "<MT>",
+    "<KS>",
+]
 
-def lm_midi_vocabulary() -> list[str]:
+ANNOTATED_SUBTYPE_TOKENS = [
+    "<a_tempo>",
+    "<accel>",
+    "<accent>",
+    "<agitato>",
+    "<allargando>",
+    "<arpeggio>",
+    "<calando>",
+    "<cantabile>",
+    "<colla_parte>",
+    "<colla_voce>",
+    "<cre>",
+    "<cresc>",
+    "<crescendo>",
+    "<cédez>",
+    "<dim>",
+    "<dimin>",
+    "<dolce>",
+    "<down>",
+    "<espress>",
+    "<espressivo>",
+    "<f>",
+    "<ff>",
+    "<fff>",
+    "<ffff>",
+    "<in_tempo>",
+    "<key_A>",
+    "<key_Ab>",
+    "<key_Am>",
+    "<key_B>",
+    "<key_Bb>",
+    "<key_Bbm>",
+    "<key_Bm>",
+    "<key_C#m>",
+    "<key_C>",
+    "<key_Cm>",
+    "<key_D#m>",
+    "<key_D>",
+    "<key_Db>",
+    "<key_Dm>",
+    "<key_E>",
+    "<key_Eb>",
+    "<key_Em>",
+    "<key_F#>",
+    "<key_F#m>",
+    "<key_F>",
+    "<key_Fm>",
+    "<key_G#m>",
+    "<key_G>",
+    "<key_Gm>",
+    "<legato>",
+    "<leggiero>",
+    "<loco>",
+    "<marcato>",
+    "<meter_1/16>",
+    "<meter_1/2>",
+    "<meter_1/4>",
+    "<meter_1/8>",
+    "<meter_10/4>",
+    "<meter_10/8>",
+    "<meter_11/16>",
+    "<meter_11/8>",
+    "<meter_12/16>",
+    "<meter_12/32>",
+    "<meter_12/8>",
+    "<meter_17/16>",
+    "<meter_2/16>",
+    "<meter_2/1>",
+    "<meter_2/2>",
+    "<meter_2/4>",
+    "<meter_2/8>",
+    "<meter_3/16>",
+    "<meter_3/1>",
+    "<meter_3/2>",
+    "<meter_3/4>",
+    "<meter_3/8>",
+    "<meter_4/16>",
+    "<meter_4/2>",
+    "<meter_4/4>",
+    "<meter_4/8>",
+    "<meter_5/16>",
+    "<meter_5/4>",
+    "<meter_5/8>",
+    "<meter_6/16>",
+    "<meter_6/4>",
+    "<meter_6/8>",
+    "<meter_7/4>",
+    "<meter_7/8>",
+    "<meter_8/32>",
+    "<meter_8/4>",
+    "<meter_8/8>",
+    "<meter_9/16>",
+    "<meter_9/2>",
+    "<meter_9/4>",
+    "<meter_9/8>",
+    "<mf>",
+    "<molto_rall>",
+    "<mouvt>",
+    "<mp>",
+    "<p>",
+    "<pesante>",
+    "<piu>",
+    "<poco_rit>",
+    "<poco_ritard>",
+    "<pp>",
+    "<ppp>",
+    "<pppp>",
+    "<rall>",
+    "<rit>",
+    "<ritard>",
+    "<riten>",
+    "<rubato>",
+    "<sec>",
+    "<sempre>",
+    "<sfz>",
+    "<slur>",
+    "<sostenuto>",
+    "<sotto_voce>",
+    "<staccato>",
+    "<stretto>",
+    "<subito>",
+    "<tempo_i>",
+    "<ten>",
+    "<tenuto>",
+    "<tranquillo>",
+    "<trill>",
+    "<turn>",
+    "<una_corda>",
+    "<up>",
+]
+
+
+def lm_midi_performance_vocabulary() -> list[str]:
     tokens: list[str] = []
     tokens += [f"<N{i:03d}>" for i in range(128)]
     tokens += [f"<V{i:03d}>" for i in range(128)]
@@ -50,9 +201,31 @@ def lm_midi_vocabulary() -> list[str]:
     return tokens
 
 
-def add_lm_midi_tokens(tokenizer) -> int:
+def lm_midi_full_vocabulary() -> list[str]:
+    tokens = lm_midi_performance_vocabulary()
+    tokens += [f"<L{i:03d}>" for i in range(128)]
+    tokens += ANNOTATED_EVENT_TOKENS
+    tokens += ANNOTATED_SUBTYPE_TOKENS
+    return tokens
+
+
+def lm_midi_vocabulary(mode: str = "full") -> list[str]:
+    """Return the LM-MIDI vocabulary for the requested mode.
+
+    Modes:
+    - ``performance``: legacy performance-only vocabulary (524 tokens)
+    - ``full``: performance + annotated-score vocabulary (796 tokens)
+    """
+    if mode == "performance":
+        return lm_midi_performance_vocabulary()
+    if mode == "full":
+        return lm_midi_full_vocabulary()
+    raise ValueError(f"unsupported LM-MIDI vocabulary mode: {mode}")
+
+
+def add_lm_midi_tokens(tokenizer, mode: str = "full") -> int:
     """Add LM-MIDI symbols as indivisible ordinary added tokens."""
-    tokens = lm_midi_vocabulary()
+    tokens = lm_midi_vocabulary(mode=mode)
     if AddedToken is None:
         return tokenizer.add_tokens(tokens)
     return tokenizer.add_tokens(
@@ -69,11 +242,11 @@ def add_lm_midi_tokens(tokenizer) -> int:
     )
 
 
-def load_lm_midi_tokenizer(tokenizer_path: str, trust_remote_code: bool = True):
+def load_lm_midi_tokenizer(tokenizer_path: str, trust_remote_code: bool = True, mode: str = "full"):
     from transformers import AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=trust_remote_code)
-    add_lm_midi_tokens(tokenizer)
+    add_lm_midi_tokens(tokenizer, mode=mode)
     return tokenizer
 
 

@@ -46,7 +46,7 @@ EXTENSION_EVENTS = {
     "EXD": "<EXD>",
     "EXO": "<EXO>",
 }
-NOTE_RE = re.compile(r"^([A-G])(#?)(-?\d+)$")
+NOTE_RE = re.compile(r"^([A-G])(#?)(-?\d+)(L?)$")
 
 
 def midi_pitch_to_logic_note(pitch: int) -> str:
@@ -62,7 +62,7 @@ def midi_pitch_to_logic_note(pitch: int) -> str:
 
 
 def logic_note_to_midi_pitch(note_name: str) -> int:
-    """Parse a Logic Pro note name such as F#2 or A#3 into MIDI pitch."""
+    """Parse a Logic Pro note name such as F#2, A#3, or C2L into MIDI pitch."""
     match = NOTE_RE.match(note_name)
     if not match:
         raise ValueError(f"Invalid Logic Pro note name: {note_name!r}")
@@ -72,6 +72,13 @@ def logic_note_to_midi_pitch(note_name: str) -> int:
     if not 0 <= pitch <= 127:
         raise ValueError(f"Logic Pro note name out of MIDI range: {note_name!r} -> {pitch}")
     return pitch
+
+
+def logic_note_is_lower_staff(note_name: str) -> bool:
+    match = NOTE_RE.match(note_name)
+    if not match:
+        raise ValueError(f"Invalid Logic Pro note name: {note_name!r}")
+    return match.group(4) == "L"
 
 
 def t_token(value: int) -> str:
@@ -84,9 +91,10 @@ def v_token(value: int) -> str:
     return f"<V{value:03d}>"
 
 
-def n_token(pitch: int) -> str:
+def n_token(pitch: int, lower_staff: bool = False) -> str:
     _require_range(pitch, 0, 127, "pitch")
-    return f"<N{pitch:03d}>"
+    prefix = "L" if lower_staff else "N"
+    return f"<{prefix}{pitch:03d}>"
 
 
 def nil_token() -> str:
@@ -176,12 +184,13 @@ def row_to_lm_midi_events(
         return events
 
     pitch = logic_note_to_midi_pitch(event)
+    lower_staff = logic_note_is_lower_staff(event)
     value_u8 = _parse_required_int(value, "note velocity")
     _require_range(value_u8, 0, 127, "note velocity")
     events = []
     duration_slot = _timing_slot_or_ext(duration, "EXD", events)
     offset_slot = _timing_slot_or_ext(offset, "EXO", events)
-    events.append(f"{n_token(pitch)}{v_token(value_u8)}{duration_slot}{offset_slot}")
+    events.append(f"{n_token(pitch, lower_staff=lower_staff)}{v_token(value_u8)}{duration_slot}{offset_slot}")
     return events
 
 

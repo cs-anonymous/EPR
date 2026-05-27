@@ -14,6 +14,8 @@ import importlib.util
 import json
 import re
 import sys
+from collections import Counter
+from fractions import Fraction
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -24,10 +26,22 @@ from tqdm import tqdm
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 try:
-    from scripts.aligned_abcx_format import AlignedAbcxError, build_aligned_abcx
+    from scripts.aligned_abcx_format import (
+        AlignedAbcxError,
+        build_aligned_abcx,
+        parse_score_layout,
+        read_abcx_lines,
+        simplify_measure_content,
+    )
     from scripts.lm_midi_tsv import midi_pitch_to_logic_note, semantic_event_to_tsv_rows, tsv_row_to_line
 except ModuleNotFoundError:
-    from aligned_abcx_format import AlignedAbcxError, build_aligned_abcx
+    from aligned_abcx_format import (
+        AlignedAbcxError,
+        build_aligned_abcx,
+        parse_score_layout,
+        read_abcx_lines,
+        simplify_measure_content,
+    )
     from lm_midi_tsv import midi_pitch_to_logic_note, semantic_event_to_tsv_rows, tsv_row_to_line
 
 
@@ -184,6 +198,556 @@ def load_midi_tsv_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def build_aligned_measure_content(
+    score_abcx: Path,
+    midi_measure_content: dict[int, str],
+) -> dict[int, str]:
+    """Project expanded raw ABCX measure content into aligned `StaffU ; StaffL` rows."""
+    lines = read_abcx_lines(score_abcx)
+    layout = parse_score_layout(lines)
+    return {
+        measure_num: simplify_measure_content(content, layout)
+        for measure_num, content in midi_measure_content.items()
+    }
+
+
+def _parse_unit_length(lines: list[str]) -> Fraction:
+    for line in lines:
+        if line.startswith("L:"):
+            match = re.match(r"L:\s*(\d+)/(\d+)", line)
+            if match:
+                return Fraction(int(match.group(1)), int(match.group(2)))
+    return Fraction(1, 8)
+
+
+def _parse_key_signature(lines: list[str]) -> str:
+    for line in lines:
+        if line.startswith("K:"):
+            return line[2:].strip().split()[0]
+    return "C"
+
+
+def _key_signature_accidentals(key: str) -> dict[str, int]:
+    return {
+        "G": {"F": 1},
+        "D": {"F": 1, "C": 1},
+        "A": {"F": 1, "C": 1, "G": 1},
+        "E": {"F": 1, "C": 1, "G": 1, "D": 1},
+        "B": {"F": 1, "C": 1, "G": 1, "D": 1, "A": 1},
+        "F#": {"F": 1, "C": 1, "G": 1, "D": 1, "A": 1, "E": 1},
+        "C#": {"F": 1, "C": 1, "G": 1, "D": 1, "A": 1, "E": 1, "B": 1},
+        "F": {"B": -1},
+        "Bb": {"B": -1, "E": -1},
+        "Eb": {"B": -1, "E": -1, "A": -1},
+        "Ab": {"B": -1, "E": -1, "A": -1, "D": -1},
+        "Db": {"B": -1, "E": -1, "A": -1, "D": -1, "G": -1},
+        "Gb": {"B": -1, "E": -1, "A": -1, "D": -1, "G": -1, "C": -1},
+        "Cb": {"B": -1, "E": -1, "A": -1, "D": -1, "G": -1, "C": -1, "F": -1},
+        "Am": {},
+        "Em": {"F": 1},
+        "Bm": {"F": 1, "C": 1},
+        "F#m": {"F": 1, "C": 1, "G": 1},
+        "C#m": {"F": 1, "C": 1, "G": 1, "D": 1},
+        "G#m": {"F": 1, "C": 1, "G": 1, "D": 1, "A": 1},
+        "D#m": {"F": 1, "C": 1, "G": 1, "D": 1, "A": 1, "E": 1},
+        "A#m": {"F": 1, "C": 1, "G": 1, "D": 1, "A": 1, "E": 1, "B": 1},
+        "Dm": {"B": -1},
+        "Gm": {"B": -1, "E": -1},
+        "Cm": {"B": -1, "E": -1, "A": -1},
+        "Fm": {"B": -1, "E": -1, "A": -1, "D": -1},
+        "Bbm": {"B": -1, "E": -1, "A": -1, "D": -1, "G": -1},
+        "Ebm": {"B": -1, "E": -1, "A": -1, "D": -1, "G": -1, "C": -1},
+        "Abm": {"B": -1, "E": -1, "A": -1, "D": -1, "G": -1, "C": -1, "F": -1},
+    }.get(key, {})
+
+
+def _split_top_level(text: str, separator: str) -> list[str]:
+    parts: list[str] = []
+    current: list[str] = []
+    in_quote = False
+    bang_open = False
+    bracket_depth = 0
+    brace_depth = 0
+
+    for char in text:
+        if char == '"' and not bang_open:
+            in_quote = not in_quote
+            current.append(char)
+            continue
+        if char == "!" and not in_quote:
+            bang_open = not bang_open
+            current.append(char)
+            continue
+        if not in_quote and not bang_open:
+            if char == "[":
+                bracket_depth += 1
+            elif char == "]" and bracket_depth:
+                bracket_depth -= 1
+            elif char == "{":
+                brace_depth += 1
+            elif char == "}" and brace_depth:
+                brace_depth -= 1
+            elif char == separator and bracket_depth == 0 and brace_depth == 0:
+                parts.append("".join(current).strip())
+                current = []
+                continue
+        current.append(char)
+
+    parts.append("".join(current).strip())
+    return parts
+
+
+def _abc_duration_from_suffix(duration_suffix: str, unit_length: Fraction) -> Fraction:
+    if not duration_suffix:
+        return unit_length
+    if duration_suffix.startswith("/"):
+        return unit_length / (2 ** len(duration_suffix))
+    if "/" in duration_suffix:
+        num, denom = duration_suffix.split("/", 1)
+        return unit_length * Fraction(int(num), int(denom))
+    return unit_length * int(duration_suffix)
+
+
+def _default_tuplet_factor(count: int) -> Fraction:
+    defaults = {
+        2: Fraction(3, 2),
+        3: Fraction(2, 3),
+        4: Fraction(3, 4),
+        5: Fraction(4, 5),
+        6: Fraction(4, 6),
+        7: Fraction(4, 7),
+        8: Fraction(6, 8),
+        9: Fraction(6, 9),
+    }
+    return defaults.get(count, Fraction(1, 1))
+
+
+def _parse_note_atom(text: str, index: int) -> tuple[dict[str, object], int] | None:
+    start = index
+    accidental = []
+    while index < len(text) and text[index] in "^=_":
+        accidental.append(text[index])
+        index += 1
+    if index >= len(text) or text[index] not in "ABCDEFGabcdefg":
+        return None
+    letter = text[index]
+    index += 1
+    octave = []
+    while index < len(text) and text[index] in "',":
+        octave.append(text[index])
+        index += 1
+    duration = []
+    while index < len(text) and (text[index].isdigit() or text[index] == "/"):
+        duration.append(text[index])
+        index += 1
+    tie_out = index < len(text) and text[index] == "-"
+    if tie_out:
+        index += 1
+    return (
+        {
+            "text": text[start:index],
+            "accidental": "".join(accidental),
+            "letter": letter,
+            "octave": "".join(octave),
+            "duration": "".join(duration),
+            "tie_out": tie_out,
+        },
+        index,
+    )
+
+
+def _abc_note_to_midi(
+    accidental: str,
+    letter: str,
+    octave_marks: str,
+    state: dict[str, int],
+    key_accidentals: dict[str, int],
+) -> int:
+    base_pc = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}[letter.upper()]
+    midi_pitch = 60 + base_pc
+    if letter.islower():
+        midi_pitch += 12
+    for mark in octave_marks:
+        midi_pitch += 12 if mark == "'" else -12
+
+    accidental_key = f"{letter}{octave_marks}"
+    if accidental:
+        if accidental.startswith("^"):
+            state[accidental_key] = accidental.count("^")
+        elif accidental.startswith("_"):
+            state[accidental_key] = -accidental.count("_")
+        else:
+            state[accidental_key] = 0
+    offset = state.get(accidental_key, key_accidentals.get(letter.upper(), 0))
+    return midi_pitch + offset
+
+
+def _parse_chord_pitches(
+    chord_text: str,
+    state: dict[str, int],
+    key_accidentals: dict[str, int],
+) -> list[int]:
+    inner = chord_text[1:-1]
+    pitches: list[int] = []
+    index = 0
+    while index < len(inner):
+        parsed = _parse_note_atom(inner, index)
+        if parsed is None:
+            index += 1
+            continue
+        atom, index = parsed
+        pitches.append(
+            _abc_note_to_midi(
+                str(atom["accidental"]),
+                str(atom["letter"]),
+                str(atom["octave"]),
+                state,
+                key_accidentals,
+            )
+        )
+    return pitches
+
+
+def _parse_staff_layer_events(
+    layer_text: str,
+    unit_length: Fraction,
+    key_signature: str,
+) -> list[tuple[Fraction, list[int]]]:
+    key_accidentals = _key_signature_accidentals(key_signature)
+    accidentals_state: dict[str, int] = {}
+    events: list[tuple[Fraction, list[int]]] = []
+    cursor = Fraction(0, 1)
+    tuplet_remaining = 0
+    tuplet_factor = Fraction(1, 1)
+    tied_pitches: set[int] = set()
+    index = 0
+
+    while index < len(layer_text):
+        char = layer_text[index]
+        if char.isspace() or char in "~<>":
+            index += 1
+            continue
+        if char == '"':
+            index += 1
+            while index < len(layer_text) and layer_text[index] != '"':
+                index += 1
+            index += 1
+            continue
+        if char == "!":
+            index += 1
+            while index < len(layer_text) and layer_text[index] != "!":
+                index += 1
+            index += 1
+            continue
+        if char == "{":
+            depth = 1
+            index += 1
+            while index < len(layer_text) and depth:
+                if layer_text[index] == "{":
+                    depth += 1
+                elif layer_text[index] == "}":
+                    depth -= 1
+                index += 1
+            continue
+        if layer_text.startswith("[Q:", index) or layer_text.startswith("[M:", index) or layer_text.startswith("[K:", index):
+            index += 1
+            while index < len(layer_text) and layer_text[index] != "]":
+                index += 1
+            index += 1
+            continue
+        if char == "(":
+            match = re.match(r"\((\d+)(?::(\d+))?(?::(\d+))?", layer_text[index:])
+            if match:
+                count = int(match.group(1))
+                in_time = int(match.group(2)) if match.group(2) else None
+                notes_affected = int(match.group(3)) if match.group(3) else count
+                tuplet_factor = Fraction(in_time, count) if in_time else _default_tuplet_factor(count)
+                tuplet_remaining = notes_affected
+                index += len(match.group(0))
+                continue
+            index += 1
+            continue
+        if char in ")":
+            index += 1
+            continue
+        if char in "zx":
+            index += 1
+            duration_suffix = []
+            while index < len(layer_text) and (layer_text[index].isdigit() or layer_text[index] == "/"):
+                duration_suffix.append(layer_text[index])
+                index += 1
+            duration = _abc_duration_from_suffix("".join(duration_suffix), unit_length)
+            if tuplet_remaining:
+                duration *= tuplet_factor
+                tuplet_remaining -= 1
+            if tuplet_remaining == 0:
+                tuplet_factor = Fraction(1, 1)
+            cursor += duration
+            continue
+        if char == "[":
+            end = index + 1
+            bracket_depth = 1
+            while end < len(layer_text) and bracket_depth:
+                if layer_text[end] == "[":
+                    bracket_depth += 1
+                elif layer_text[end] == "]":
+                    bracket_depth -= 1
+                end += 1
+            if bracket_depth:
+                break
+            chord_text = layer_text[index:end]
+            duration_start = end
+            while end < len(layer_text) and (layer_text[end].isdigit() or layer_text[end] == "/"):
+                end += 1
+            tie_out = end < len(layer_text) and layer_text[end] == "-"
+            if tie_out:
+                end += 1
+            pitches = _parse_chord_pitches(chord_text, accidentals_state, key_accidentals)
+            duration = _abc_duration_from_suffix(layer_text[duration_start:end - (1 if tie_out else 0)], unit_length)
+            if tuplet_remaining:
+                duration *= tuplet_factor
+                tuplet_remaining -= 1
+            if tuplet_remaining == 0:
+                tuplet_factor = Fraction(1, 1)
+            emitted = [pitch for pitch in pitches if pitch not in tied_pitches]
+            if emitted:
+                events.append((cursor, sorted(emitted)))
+            next_ties = {pitch for pitch in pitches if tie_out}
+            tied_pitches = next_ties
+            cursor += duration
+            index = end
+            continue
+
+        parsed = _parse_note_atom(layer_text, index)
+        if parsed is None:
+            index += 1
+            continue
+        atom, index = parsed
+        pitch = _abc_note_to_midi(
+            str(atom["accidental"]),
+            str(atom["letter"]),
+            str(atom["octave"]),
+            accidentals_state,
+            key_accidentals,
+        )
+        duration = _abc_duration_from_suffix(str(atom["duration"]), unit_length)
+        if tuplet_remaining:
+            duration *= tuplet_factor
+            tuplet_remaining -= 1
+        if tuplet_remaining == 0:
+            tuplet_factor = Fraction(1, 1)
+        if pitch not in tied_pitches:
+            events.append((cursor, [pitch]))
+        tied_pitches = {pitch} if atom["tie_out"] else set()
+        cursor += duration
+
+    return events
+
+
+def _parse_aligned_measure_events(
+    aligned_content: str,
+    unit_length: Fraction,
+    key_signature: str,
+) -> list[dict[str, Counter[int]]]:
+    staff_parts = _split_top_level(aligned_content, ";")
+    if len(staff_parts) < 2:
+        staff_parts += ["."] * (2 - len(staff_parts))
+
+    grouped: dict[Fraction, dict[str, Counter[int]]] = {}
+    for staff_name, staff_text in (("upper", staff_parts[0]), ("lower", staff_parts[1])):
+        cleaned_staff = staff_text.strip()
+        if not cleaned_staff or cleaned_staff == ".":
+            continue
+        for layer_idx, layer in enumerate(_split_top_level(cleaned_staff, "&")):
+            layer = layer.strip()
+            if not layer or layer == ".":
+                continue
+            bucket_name = "lower"
+            if staff_name == "upper":
+                bucket_name = "upper_main" if layer_idx == 0 else "upper_aux"
+            for onset, pitches in _parse_staff_layer_events(layer, unit_length, key_signature):
+                bucket = grouped.setdefault(
+                    onset,
+                    {
+                        "upper_main": Counter(),
+                        "upper_aux": Counter(),
+                        "lower": Counter(),
+                    },
+                )
+                counter = Counter(pitches)
+                bucket[bucket_name].update(counter)
+
+    normalized: list[dict[str, Counter[int]]] = []
+    for onset in sorted(grouped.keys()):
+        raw_bucket = grouped[onset]
+        upper = raw_bucket["upper_main"].copy()
+        lower = raw_bucket["lower"].copy()
+
+        # Auxiliary layers before `;` still belong to the upper staff.
+        # Keeping them on the upper side avoids misclassifying notes such as
+        # right-hand inner voices as left-hand material merely because the
+        # onset lacks a simultaneous primary upper voice.
+        upper.update(raw_bucket["upper_aux"])
+
+        all_counter = Counter()
+        all_counter.update(upper)
+        all_counter.update(lower)
+        normalized.append({"upper": upper, "lower": lower, "all": all_counter})
+
+    return normalized
+
+
+def _group_measure_notes(notes: list[pretty_midi.Note]) -> list[list[pretty_midi.Note]]:
+    groups: list[list[pretty_midi.Note]] = []
+    for note in sorted(notes, key=lambda n: (round(n.start, 6), n.pitch, round(n.end, 6), n.velocity)):
+        if not groups or abs(groups[-1][0].start - note.start) > 1e-6:
+            groups.append([note])
+        else:
+            groups[-1].append(note)
+    return groups
+
+
+def _assign_group_staffs(
+    midi_group: list[pretty_midi.Note],
+    abc_group: dict[str, Counter[int]] | None,
+    remaining_upper: Counter[int],
+    remaining_lower: Counter[int],
+    upper_pitch_space: set[int],
+    lower_pitch_space: set[int],
+) -> list[str | None]:
+    if abc_group is None and len(midi_group) > 1 and (upper_pitch_space or lower_pitch_space):
+        lower_overlap = sum(1 for note in midi_group if note.pitch in lower_pitch_space)
+        upper_overlap = sum(1 for note in midi_group if note.pitch in upper_pitch_space)
+        if lower_overlap > upper_overlap and lower_overlap:
+            return ["lower"] * len(midi_group)
+        if upper_overlap > lower_overlap and upper_overlap:
+            return ["upper"] * len(midi_group)
+
+    group_upper = abc_group["upper"].copy() if abc_group else Counter()
+    group_lower = abc_group["lower"].copy() if abc_group else Counter()
+    assigned: list[str | None] = []
+
+    for note in sorted(midi_group, key=lambda n: (n.pitch, round(n.end, 6), n.velocity)):
+        pitch = note.pitch
+        if group_lower[pitch] and not group_upper[pitch]:
+            staff = "lower"
+            group_lower[pitch] -= 1
+            remaining_lower[pitch] -= 1
+        elif group_upper[pitch] and not group_lower[pitch]:
+            staff = "upper"
+            group_upper[pitch] -= 1
+            remaining_upper[pitch] -= 1
+        elif group_lower[pitch] or group_upper[pitch]:
+            if group_lower[pitch] >= group_upper[pitch]:
+                staff = "lower"
+                group_lower[pitch] -= 1
+                remaining_lower[pitch] -= 1
+            else:
+                staff = "upper"
+                group_upper[pitch] -= 1
+                remaining_upper[pitch] -= 1
+        elif remaining_lower[pitch] and not remaining_upper[pitch]:
+            staff = "lower"
+            remaining_lower[pitch] -= 1
+        elif remaining_upper[pitch] and not remaining_lower[pitch]:
+            staff = "upper"
+            remaining_upper[pitch] -= 1
+        elif remaining_lower[pitch] or remaining_upper[pitch]:
+            if remaining_lower[pitch] >= remaining_upper[pitch]:
+                staff = "lower"
+                remaining_lower[pitch] -= 1
+            else:
+                staff = "upper"
+                remaining_upper[pitch] -= 1
+        elif upper_pitch_space or lower_pitch_space:
+            if not upper_pitch_space:
+                staff = "lower"
+            elif not lower_pitch_space:
+                staff = "upper"
+            else:
+                lower_dist = min(abs(pitch - abc_pitch) for abc_pitch in lower_pitch_space)
+                upper_dist = min(abs(pitch - abc_pitch) for abc_pitch in upper_pitch_space)
+                staff = "lower" if lower_dist <= upper_dist else "upper"
+        else:
+            staff = None
+        assigned.append(staff)
+
+    return assigned
+
+
+def build_measure_note_staffs_from_aligned_abcx(
+    score_midi_path: Path,
+    score_structure: ScoreStructure,
+    score_abcx: Path,
+) -> dict[int, list[str | None]]:
+    """Assign each score MIDI note to upper/lower staff using aligned ABCX note rows."""
+    lines = read_abcx_lines(score_abcx)
+    unit_length = _parse_unit_length(lines)
+    key_signature = _parse_key_signature(lines)
+    aligned_measure_content = build_aligned_measure_content(score_abcx, score_structure.midi_measure_content)
+
+    score_midi = pretty_midi.PrettyMIDI(str(score_midi_path))
+    score_notes = sorted(
+        [note for inst in score_midi.instruments if not inst.is_drum for note in inst.notes],
+        key=lambda note: (note.start, note.pitch, note.end, note.velocity),
+    )
+
+    result: dict[int, list[str | None]] = {}
+    note_index = 0
+    for measure in score_structure.measures:
+        measure_notes: list[pretty_midi.Note] = []
+        while note_index < len(score_notes) and score_notes[note_index].start < measure.end_time - 0.01:
+            note = score_notes[note_index]
+            if note.start >= measure.start_time - 0.01:
+                measure_notes.append(note)
+            note_index += 1
+
+        midi_groups = _group_measure_notes(measure_notes)
+        abc_groups = _parse_aligned_measure_events(
+            aligned_measure_content.get(measure.measure_num, ". ; ."),
+            unit_length,
+            key_signature,
+        )
+        remaining_upper = Counter()
+        remaining_lower = Counter()
+        for group in abc_groups:
+            remaining_upper.update(group["upper"])
+            remaining_lower.update(group["lower"])
+        upper_pitch_space = set(remaining_upper)
+        lower_pitch_space = set(remaining_lower)
+
+        assignments: list[str | None] = []
+        abc_index = 0
+        for midi_group in midi_groups:
+            midi_counter = Counter(note.pitch for note in midi_group)
+            best_index = None
+            best_score = -1
+            for candidate in range(abc_index, min(len(abc_groups), abc_index + 8)):
+                overlap = sum((midi_counter & abc_groups[candidate]["all"]).values())
+                size_penalty = abs(sum(midi_counter.values()) - sum(abc_groups[candidate]["all"].values()))
+                score = overlap * 8 - size_penalty - (candidate - abc_index)
+                if score > best_score:
+                    best_score = score
+                    best_index = candidate
+            abc_group = abc_groups[best_index] if best_index is not None else None
+            if best_index is not None:
+                abc_index = best_index + 1
+            assignments.extend(
+                _assign_group_staffs(
+                    midi_group,
+                    abc_group,
+                    remaining_upper,
+                    remaining_lower,
+                    upper_pitch_space,
+                    lower_pitch_space,
+                )
+            )
+
+        result[measure.measure_num] = assignments
+
+    return result
 
 
 def extract_score_measures(score_midi_path: Path, midi_tsv) -> list[ScoreMeasure]:
@@ -877,6 +1441,7 @@ def generate_performance_tsv_with_phrases(
     perf_entries: list[tuple[int | None, str, int, int]],
     output_tsv: Path,
     midi_tsv,
+    measure_note_staffs: dict[int, list[str | None]] | None = None,
 ) -> bool:
     """Generate LM-MIDI TSV v0.3 with fixed 4-column event rows.
 
@@ -900,7 +1465,7 @@ def generate_performance_tsv_with_phrases(
     perf_midi = pretty_midi.PrettyMIDI(str(perf_midi_path))
 
     all_notes = []
-    for inst in perf_midi.instruments:
+    for inst_idx, inst in enumerate(perf_midi.instruments):
         if inst.is_drum:
             continue
         for note in inst.notes:
@@ -960,47 +1525,49 @@ def generate_performance_tsv_with_phrases(
 
     # Iterate through entries: phrase headers and measure entries are already ordered
     phrase_index = -1
-    measure_local_index = 0
+    measure_global_index = -1
     last_note_tick: int | None = None
 
     for mnum_or_none, phrase_id, start_tick, end_tick in perf_entries:
         if mnum_or_none is None:
             phrase_index += 1
-            measure_local_index = 0
             lines.append(structural_row("H", phrase_index, end_tick - start_tick))
             continue
-
-        m_start_s = start_tick * 0.01
-        m_end_s = end_tick * 0.01
 
         # Find notes in this measure
         events = []
         for n in all_notes:
-            if m_start_s <= n["start"] < m_end_s:
-                abs_start_tick = round(n["start"] * 100)
+            abs_start_tick = round(n["start"] * 100)
+            if start_tick <= abs_start_tick < end_tick:
                 dur_tick = round(n["dur"] * 100)
-                events.append((abs_start_tick, 0, n["pitch"], dur_tick, n["vel"]))
+                events.append((abs_start_tick, 0, n["pitch"], dur_tick, n["vel"], n.get("staff")))
 
         # Find quantized pedals in this measure
         for p in quantized_pedals:
             p_tick = int(p["t"])
             if start_tick <= p_tick < end_tick:
-                events.append((p_tick, 1, None, 0, p["val"]))
+                events.append((p_tick, 1, None, 0, p["val"], None))
 
         # Structural rows do not affect note-offset reference.
-        lines.append(structural_row("M", measure_local_index, end_tick - start_tick))
-        measure_local_index += 1
+        measure_global_index += 1
+        lines.append(structural_row("M", measure_global_index % 128, end_tick - start_tick))
+
+        note_staff_iter = iter(measure_note_staffs.get(mnum_or_none, [])) if measure_note_staffs else None
 
         # Notes establish the timing anchor.  Pedals at the same timestamp are
         # emitted after notes so they can attach to that note onset.
         events.sort(key=lambda e: (e[0], e[1], e[2] if e[2] is not None else 128))
 
-        for abs_tick, kind, pitch, duration, value in events:
+        for abs_tick, kind, pitch, duration, value, _staff in events:
             if kind == 0:
                 note_offset = 0 if last_note_tick is None else max(0, abs_tick - last_note_tick)
                 last_note_tick = abs_tick
+                note_name = midi_pitch_to_logic_note(int(pitch))
+                event_staff = next(note_staff_iter, None) if note_staff_iter is not None else None
+                if event_staff == "lower":
+                    note_name += "L"
                 for row in semantic_event_to_tsv_rows(
-                    midi_pitch_to_logic_note(int(pitch)),
+                    note_name,
                     int(value),
                     int(duration),
                     note_offset,
@@ -1067,6 +1634,7 @@ def build_score_entries(score_structure: ScoreStructure) -> list[tuple[int | Non
 def generate_score_tsv_with_phrases(
     score_midi_path: Path,
     score_structure: ScoreStructure,
+    score_abcx_path: Path,
     output_tsv: Path,
     midi_tsv,
 ) -> bool:
@@ -1074,11 +1642,17 @@ def generate_score_tsv_with_phrases(
     score_entries = build_score_entries(score_structure)
     if not score_entries:
         return False
+    measure_note_staffs = build_measure_note_staffs_from_aligned_abcx(
+        score_midi_path,
+        score_structure,
+        score_abcx_path,
+    )
     return generate_performance_tsv_with_phrases(
         score_midi_path,
         score_entries,
         output_tsv,
         midi_tsv,
+        measure_note_staffs=measure_note_staffs,
     )
 
 

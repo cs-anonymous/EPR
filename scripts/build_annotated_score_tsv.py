@@ -6,7 +6,7 @@ This script:
 2. Uses existing alignment logic to map ABCX measures to score MIDI measures
 3. Generates/loads score MIDI TSV
 4. Merges annotations into the TSV at appropriate positions
-5. Outputs annotated_score.mid.tsv for each piece
+5. Outputs score.annotated_score.mid.tsv for each piece
 
 The alignment reuses the logic from align_score_performance.py to ensure consistency.
 """
@@ -22,6 +22,7 @@ import subprocess
 import sys
 from collections import defaultdict
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +41,8 @@ except ModuleNotFoundError:
 
 DEFAULT_METADATA = ROOT / "PianoCoReS" / "score_metadata.csv"
 DEFAULT_PIANOCORE_ROOT = ROOT / "PianoCoRe"
+DEFAULT_OUTPUT_DIR = ROOT / "PianoCoReS" / "miditsv"
+SCORE_MIDI_CANDIDATE_PREFIXES = ("score_PDMX", "score_MS", "score_ASAP", "score_ATEPP")
 
 # Annotation token mappings (from lm_midi_tokenizer.md)
 ARTICULATION_MAP = {
@@ -169,6 +172,7 @@ class Annotation:
     type: str  # annotation type: dynamic, articulation, ornament, expression, etc.
     value: str  # annotation value (token name)
     staff: str | None  # "upper" or "lower" (None = both/global)
+    pitch_anchor: tuple[int, ...] | None = None  # Target chord pitches for precise insertion
 
 
 @dataclass
@@ -189,6 +193,13 @@ class ABCXAnnotationParser:
         self.abcx_path = abcx_path
         self.content = abcx_path.read_text(encoding='utf-8')
         self.lines = self.content.split('\n')
+        self.unit_length = asp._parse_unit_length(self.lines)
+        self.key_signature = asp._parse_key_signature(self.lines)
+        self.score_layout = None
+        try:
+            self.score_layout = asp.parse_score_layout(self.lines)
+        except Exception:
+            self.score_layout = None
 
     def extract_header(self) -> ABCXHeader:
         """Extract header information (T:, C:, Z:, Q:, M:, K:)."""
@@ -240,6 +251,8 @@ class ABCXAnnotationParser:
         for measure_info in abcx_measures:
             measure_num = measure_info["num"]
             content = measure_info["content"]
+            if self.score_layout is not None:
+                content = asp.simplify_measure_content(content, self.score_layout)
 
             # Extract annotations from this measure
             measure_annotations = self._extract_from_measure(content, measure_num)
@@ -249,109 +262,283 @@ class ABCXAnnotationParser:
 
     def _extract_from_measure(self, content: str, measure_num: int) -> list[Annotation]:
         """Extract annotations from a single measure's content."""
-        annotations = []
+        staff_parts = asp._split_top_level(content, ";")
+        if len(staff_parts) < 2:
+            staff_parts += ["."] * (2 - len(staff_parts))
 
-        # Split by voice separator (;) to handle upper/lower staff
-        voices = content.split(';')
+        timed_annotations: list[tuple[Fraction, str, str, str | None, tuple[int, ...] | None]] = []
+        onset_sources: dict[str, set[Fraction]] = {
+            "upper_main": set(),
+            "upper_aux": set(),
+            "lower": set(),
+        }
 
-        # For now, treat first 2 voices as upper/lower
-        # More complex: need to parse %%score directive
-        for voice_idx, voice_content in enumerate(voices[:2]):
+        for voice_idx, staff_text in enumerate(staff_parts[:2]):
             staff = "upper" if voice_idx == 0 else "lower"
+            for layer_idx, layer_text in enumerate(asp._split_top_level(staff_text, "&")):
+                layer_text = layer_text.strip()
+                if not layer_text or layer_text == ".":
+                    continue
+                source_name = "lower"
+                if staff == "upper":
+                    source_name = "upper_main" if layer_idx == 0 else "upper_aux"
+                for onset, _pitches in asp._parse_staff_layer_events(layer_text, self.unit_length, self.key_signature):
+                    onset_sources[source_name].add(onset)
+                timed_annotations.extend(
+                    self._extract_timed_annotations_from_layer(layer_text, staff, layer_idx)
+                )
 
-            # Extract dynamics
-            for marker, token in DYNAMIC_MAP.items():
-                if marker in voice_content:
-                    annotations.append(Annotation(
-                        measure_num=measure_num,
-                        position=0,
-                        type="dynamic",
-                        value=token,
-                        staff=staff,
-                    ))
+        all_onsets = sorted(set().union(*onset_sources.values()))
+        annotations: list[Annotation] = []
+        for onset_time, ann_type, ann_value, ann_staff, pitch_anchor in timed_annotations:
+            effective_staff = ann_staff
+            if ann_staff == "upper_aux":
+                effective_staff = "upper"
 
-            # Extract articulations (per-note, but we place at measure start)
-            for marker, token in ARTICULATION_MAP.items():
-                if marker in voice_content:
-                    annotations.append(Annotation(
-                        measure_num=measure_num,
-                        position=0,
-                        type="articulation",
-                        value=token,
-                        staff=staff,
-                    ))
+            position = 0
+            if all_onsets:
+                position = len(all_onsets) - 1
+                for idx, onset in enumerate(all_onsets):
+                    if onset >= onset_time:
+                        position = idx
+                        break
 
-            # Extract ornaments
-            for marker, token in ORNAMENT_MAP.items():
-                if marker in voice_content:
-                    annotations.append(Annotation(
-                        measure_num=measure_num,
-                        position=0,
-                        type="ornament",
-                        value=token,
-                        staff=staff,
-                    ))
-
-            # Extract range starts
-            for marker, token in RANGE_START_MAP.items():
-                if marker in voice_content:
-                    annotations.append(Annotation(
-                        measure_num=measure_num,
-                        position=0,
-                        type="range_start",
-                        value=token,
-                        staff=staff,
-                    ))
-
-            # Extract range ends
-            for marker, token in RANGE_END_MAP.items():
-                if marker in voice_content:
-                    annotations.append(Annotation(
-                        measure_num=measure_num,
-                        position=0,
-                        type="range_end",
-                        value=token,
-                        staff=staff,
-                    ))
-
-            # Extract expression text (!"..."!)
-            expr_pattern = r'!"([^"]+)"!'
-            for match in re.finditer(expr_pattern, voice_content):
-                expr_text = match.group(1).strip()
-                # Normalize expression text
-                expr_normalized = expr_text.lower().replace('^', '').replace('_', '').replace('.', '').strip()
-
-                # Check if it's a known expression term
-                if expr_normalized in EXPRESSION_MAP:
-                    token = EXPRESSION_MAP[expr_normalized]
-                    annotations.append(Annotation(
-                        measure_num=measure_num,
-                        position=0,
-                        type="expression",
-                        value=token,
-                        staff=staff,
-                    ))
-                # Check for pedal marks
-                elif expr_text in PEDAL_MAP:
-                    annotations.append(Annotation(
-                        measure_num=measure_num,
-                        position=0,
-                        type="pedal",
-                        value=PEDAL_MAP[expr_text],
-                        staff=None,  # pedal is global
-                    ))
-
-            # Extract fermata
-            if "!fermata!" in voice_content:
-                annotations.append(Annotation(
+            annotations.append(
+                Annotation(
                     measure_num=measure_num,
-                    position=0,
-                    type="fermata",
-                    value="fermata",
-                    staff=staff,
-                ))
+                    position=position,
+                    type=ann_type,
+                    value=ann_value,
+                    staff=effective_staff,
+                    pitch_anchor=pitch_anchor,
+                )
+            )
 
         return annotations
+
+    def _extract_timed_annotations_from_layer(
+        self,
+        layer_text: str,
+        staff: str,
+        layer_idx: int,
+    ) -> list[tuple[Fraction, str, str, str | None, tuple[int, ...] | None]]:
+        """Extract timed annotations from one layer.
+
+        Timings are tracked in ABC measure-time units so annotations can later
+        be attached to the first note onset at or after their textual position.
+        """
+        layer_staff = "upper_aux" if staff == "upper" and layer_idx > 0 else staff
+        annotations: list[tuple[Fraction, str, str, str | None, tuple[int, ...] | None]] = []
+        cursor = Fraction(0, 1)
+        tuplet_remaining = 0
+        tuplet_factor = Fraction(1, 1)
+        index = 0
+
+        while index < len(layer_text):
+            char = layer_text[index]
+            if char.isspace() or char in "~<>":
+                index += 1
+                continue
+            if char == '"':
+                end = index + 1
+                while end < len(layer_text) and layer_text[end] != '"':
+                    end += 1
+                expr_text = layer_text[index + 1:end].strip()
+                expr_normalized = expr_text.lower().replace('^', '').replace('_', '').replace('.', '').strip()
+                if expr_text in PEDAL_MAP:
+                    annotations.append((cursor, "pedal", PEDAL_MAP[expr_text], None, None))
+                elif expr_normalized in EXPRESSION_MAP:
+                    annotations.append((cursor, "expression", EXPRESSION_MAP[expr_normalized], layer_staff, None))
+                index = min(end + 1, len(layer_text))
+                continue
+            if char == "!":
+                end = index + 1
+                while end < len(layer_text) and layer_text[end] != "!":
+                    end += 1
+                marker = layer_text[index:min(end + 1, len(layer_text))]
+                if marker in DYNAMIC_MAP:
+                    annotations.append((cursor, "dynamic", DYNAMIC_MAP[marker], layer_staff, None))
+                elif marker in ARTICULATION_MAP:
+                    annotations.append((cursor, "articulation", ARTICULATION_MAP[marker], layer_staff, None))
+                elif marker in ORNAMENT_MAP:
+                    pitch_anchor = None
+                    if ORNAMENT_MAP[marker] == "arpeggio":
+                        pitch_anchor = self._next_chord_pitch_anchor(
+                            layer_text,
+                            min(end + 1, len(layer_text)),
+                        )
+                    annotations.append((cursor, "ornament", ORNAMENT_MAP[marker], layer_staff, pitch_anchor))
+                elif marker in RANGE_START_MAP:
+                    annotations.append((cursor, "range_start", RANGE_START_MAP[marker], layer_staff, None))
+                elif marker in RANGE_END_MAP:
+                    annotations.append((cursor, "range_end", RANGE_END_MAP[marker], layer_staff, None))
+                elif marker == "!fermata!":
+                    annotations.append((cursor, "fermata", "fermata", layer_staff, None))
+                index = min(end + 1, len(layer_text))
+                continue
+            if char == "{":
+                depth = 1
+                index += 1
+                while index < len(layer_text) and depth:
+                    if layer_text[index] == "{":
+                        depth += 1
+                    elif layer_text[index] == "}":
+                        depth -= 1
+                    index += 1
+                continue
+            if layer_text.startswith("[Q:", index) or layer_text.startswith("[M:", index) or layer_text.startswith("[K:", index):
+                index += 1
+                while index < len(layer_text) and layer_text[index] != "]":
+                    index += 1
+                index = min(index + 1, len(layer_text))
+                continue
+            if char == "(":
+                match = re.match(r"\((\d+)(?::(\d+))?(?::(\d+))?", layer_text[index:])
+                if match:
+                    count = int(match.group(1))
+                    in_time = int(match.group(2)) if match.group(2) else None
+                    notes_affected = int(match.group(3)) if match.group(3) else count
+                    tuplet_factor = Fraction(in_time, count) if in_time else asp._default_tuplet_factor(count)
+                    tuplet_remaining = notes_affected
+                    index += len(match.group(0))
+                    continue
+                index += 1
+                continue
+            if char == ")":
+                index += 1
+                continue
+            if char in "zx":
+                index += 1
+                duration_suffix = []
+                while index < len(layer_text) and (layer_text[index].isdigit() or layer_text[index] == "/"):
+                    duration_suffix.append(layer_text[index])
+                    index += 1
+                duration = asp._abc_duration_from_suffix("".join(duration_suffix), self.unit_length)
+                if tuplet_remaining:
+                    duration *= tuplet_factor
+                    tuplet_remaining -= 1
+                if tuplet_remaining == 0:
+                    tuplet_factor = Fraction(1, 1)
+                cursor += duration
+                continue
+            if char == "[":
+                end = index + 1
+                bracket_depth = 1
+                while end < len(layer_text) and bracket_depth:
+                    if layer_text[end] == "[":
+                        bracket_depth += 1
+                    elif layer_text[end] == "]":
+                        bracket_depth -= 1
+                    end += 1
+                if bracket_depth:
+                    break
+                duration_start = end
+                while end < len(layer_text) and (layer_text[end].isdigit() or layer_text[end] == "/"):
+                    end += 1
+                tie_out = end < len(layer_text) and layer_text[end] == "-"
+                if tie_out:
+                    end += 1
+                duration = asp._abc_duration_from_suffix(
+                    layer_text[duration_start:end - (1 if tie_out else 0)],
+                    self.unit_length,
+                )
+                if tuplet_remaining:
+                    duration *= tuplet_factor
+                    tuplet_remaining -= 1
+                if tuplet_remaining == 0:
+                    tuplet_factor = Fraction(1, 1)
+                cursor += duration
+                index = end
+                continue
+
+            parsed = asp._parse_note_atom(layer_text, index)
+            if parsed is None:
+                index += 1
+                continue
+            atom, index = parsed
+            duration = asp._abc_duration_from_suffix(str(atom["duration"]), self.unit_length)
+            if tuplet_remaining:
+                duration *= tuplet_factor
+                tuplet_remaining -= 1
+            if tuplet_remaining == 0:
+                tuplet_factor = Fraction(1, 1)
+            cursor += duration
+
+        return annotations
+
+    def _next_chord_pitch_anchor(self, layer_text: str, index: int) -> tuple[int, ...] | None:
+        """Return the next chord/note pitch tuple after an annotation marker."""
+        while index < len(layer_text):
+            char = layer_text[index]
+            if char.isspace() or char in "~<>":
+                index += 1
+                continue
+            if char == '"':
+                end = index + 1
+                while end < len(layer_text) and layer_text[end] != '"':
+                    end += 1
+                index = min(end + 1, len(layer_text))
+                continue
+            if char == "!":
+                end = index + 1
+                while end < len(layer_text) and layer_text[end] != "!":
+                    end += 1
+                index = min(end + 1, len(layer_text))
+                continue
+            if char == "{":
+                depth = 1
+                index += 1
+                while index < len(layer_text) and depth:
+                    if layer_text[index] == "{":
+                        depth += 1
+                    elif layer_text[index] == "}":
+                        depth -= 1
+                    index += 1
+                continue
+            if layer_text.startswith("[Q:", index) or layer_text.startswith("[M:", index) or layer_text.startswith("[K:", index):
+                index += 1
+                while index < len(layer_text) and layer_text[index] != "]":
+                    index += 1
+                index = min(index + 1, len(layer_text))
+                continue
+            if char in "zx()":
+                index += 1
+                continue
+            if char == "[":
+                end = index + 1
+                bracket_depth = 1
+                while end < len(layer_text) and bracket_depth:
+                    if layer_text[end] == "[":
+                        bracket_depth += 1
+                    elif layer_text[end] == "]":
+                        bracket_depth -= 1
+                    end += 1
+                if bracket_depth:
+                    return None
+                chord_text = layer_text[index:end]
+                if chord_text.startswith("[K:") or chord_text.startswith("[M:") or chord_text.startswith("[Q:"):
+                    index = end
+                    continue
+                pitches = asp._parse_chord_pitches(
+                    chord_text,
+                    {},
+                    asp._key_signature_accidentals(self.key_signature),
+                )
+                return tuple(sorted(pitches)) if pitches else None
+            parsed = asp._parse_note_atom(layer_text, index)
+            if parsed is None:
+                index += 1
+                continue
+            atom, _next = parsed
+            pitch = asp._abc_note_to_midi(
+                str(atom["accidental"]),
+                str(atom["letter"]),
+                str(atom["octave"]),
+                {},
+                asp._key_signature_accidentals(self.key_signature),
+            )
+            return (pitch,)
+        return None
 
 
 def generate_score_midi_tsv_if_needed(
@@ -365,26 +552,26 @@ def generate_score_midi_tsv_if_needed(
     Returns the path to the TSV file, or None if generation failed.
     """
     # Determine output path
-    tsv_filename = score_midi_path.stem + ".tsv"
+    tsv_filename = score_midi_path.name + ".tsv"
     tsv_path = output_dir / tsv_filename
 
-    if tsv_path.exists():
+    if tsv_path.exists() and not _staff_regeneration_needed(tsv_path, score_midi_path, score_abcx_path, midi_tsv_module):
         return tsv_path
 
     # Generate using existing logic from build_score_midi_tsv.py
     try:
-        # Extract score structure
-        score_measures = asp.extract_score_measures(score_midi_path, midi_tsv_module)
-        if not score_measures:
-            return None
-
-        # Build score structure with phrases
-        structure, ok = _build_score_structure(score_midi_path, score_abcx_path, output_dir, midi_tsv_module)
+        structure, ok = _build_score_structure(score_midi_path, score_abcx_path, midi_tsv_module)
         if not ok or structure is None:
             return None
 
         # Generate TSV
-        success = asp.generate_score_tsv_with_phrases(score_midi_path, structure, tsv_path, midi_tsv_module)
+        success = asp.generate_score_tsv_with_phrases(
+            score_midi_path,
+            structure,
+            score_abcx_path,
+            tsv_path,
+            midi_tsv_module,
+        )
         if success:
             return tsv_path
 
@@ -394,40 +581,81 @@ def generate_score_midi_tsv_if_needed(
     return None
 
 
-def _build_score_structure(score_midi_path, score_abcx_path, output_dir, midi_tsv_module):
-    """Build score structure (reuse from align_score_performance.py)."""
+def _piece_rel_from_score_abcx_path(score_abcx_path: Path) -> Path | None:
+    parts = score_abcx_path.parts
+    if "score" in parts:
+        idx = parts.index("score")
+        return Path(*parts[idx + 1 : -1])
+    if "miditsv" in parts:
+        idx = parts.index("miditsv")
+        return Path(*parts[idx + 1 : -1])
+    return None
+
+
+def _resolve_score_midi_from_piece(score_abcx_path: Path, pianocore_root: Path) -> Path | None:
+    piece_rel = _piece_rel_from_score_abcx_path(score_abcx_path)
+    if piece_rel is None:
+        return None
+
+    candidates: list[Path] = []
+    for prefix in SCORE_MIDI_CANDIDATE_PREFIXES:
+        candidates.append(pianocore_root / "refined" / piece_rel / f"{prefix}_refined.mid")
+    for prefix in SCORE_MIDI_CANDIDATE_PREFIXES:
+        candidates.append(pianocore_root / "raw" / piece_rel / f"{prefix}.mid")
+
+    seen: set[Path] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _staff_regeneration_needed(
+    tsv_path: Path,
+    score_midi_path: Path,
+    score_abcx_path: Path,
+    midi_tsv_module,
+) -> bool:
+    """Regenerate cached TSV when aligned ABCX contains lower-staff notes but TSV does not."""
+    if not score_midi_path.exists() or not score_abcx_path.exists():
+        return False
     try:
-        score_measures = asp.extract_score_measures(score_midi_path, midi_tsv_module)
-        if not score_measures:
-            return None, False
-
-        phrases, abcx_measures = asp.parse_abcx_structure(score_abcx_path, score_measures)
-        if not phrases:
-            return None, False
-
-        # Build measure_to_phrase mapping
-        measure_to_phrase = {}
-        for phrase in phrases:
-            for m_num in phrase.measures:
-                measure_to_phrase[m_num] = phrase.phrase_id
-
-        # Build midi_to_abcx mapping (1:1 for now, assuming no repeats in score MIDI)
-        midi_to_abcx = {i: i for i in range(1, len(score_measures) + 1)}
-
-        # Build midi_measure_content from abcx_measures
-        # abcx_measures is a dict[int, str] mapping measure_num -> content
-        midi_measure_content = abcx_measures.copy()
-
-        structure = asp.ScoreStructure(
-            measures=score_measures,
-            phrases=phrases,
-            measure_to_phrase=measure_to_phrase,
-            abcx_measures=abcx_measures,
-            midi_to_abcx=midi_to_abcx,
-            midi_measure_content=midi_measure_content,
+        structure, ok = _build_score_structure(score_midi_path, score_abcx_path, midi_tsv_module)
+        if not ok or structure is None:
+            return False
+        aligned_content = asp.build_aligned_measure_content(score_abcx_path, structure.midi_measure_content)
+        lower_has_pitches = any(
+            re.search(r"[\^_=]?[A-Ga-g][,']*", content.split(";", 1)[1])
+            for content in aligned_content.values()
+            if ";" in content
         )
+        if not lower_has_pitches:
+            return False
 
-        return structure, True
+        with tsv_path.open("r", encoding="utf-8") as f:
+            for line in f:
+                if "\t" not in line or line.startswith("#"):
+                    continue
+                event = line.split("\t", 1)[0]
+                if re.fullmatch(r"[A-G]#?-?\d+L", event):
+                    return False
+        return True
+    except Exception:
+        return False
+
+
+def _build_score_structure(score_midi_path, score_abcx_path, midi_tsv_module):
+    """Build score structure via the main alignment pipeline."""
+    try:
+        return asp._build_score_structure(
+            score_midi_path,
+            score_abcx_path,
+            score_midi_path.parent,
+            midi_tsv_module,
+        )
 
     except Exception as e:
         print(f"Error building structure: {e}")
@@ -486,12 +714,12 @@ def generate_annotation_only_tsv(
         lines.append('# note: This file contains only annotations extracted from ABCX\n')
         lines.append('# note: No score MIDI available, so no note events included\n')
 
-        # Score header info
+        # Score header info as comments for strict TSV parsers.
         if header.titles:
             for title in header.titles:
-                lines.append(f'T:{title}\n')
+                lines.append(f'# T:{title}\n')
         if header.composer:
-            lines.append(f'C:{header.composer}\n')
+            lines.append(f'# C:{header.composer}\n')
         lines.append('\n')
 
         # Global annotations
@@ -522,8 +750,9 @@ def generate_annotation_only_tsv(
                     lines.append(ann_line)
 
         # Write output
+        normalized_lines = [line if line.endswith('\n') else line + '\n' for line in lines]
         with output_path.open('w', encoding='utf-8') as f:
-            f.writelines(lines)
+            f.writelines(normalized_lines)
 
         return True
 
@@ -573,54 +802,25 @@ def merge_annotations_into_tsv(
             else:
                 updated_header.append(line)
 
-        # Add score header info
+        # Add score header info as comments for strict TSV parsers.
         if header.titles:
             for title in header.titles:
-                updated_header.append(f'T:{title}\n')
+                updated_header.append(f'# T:{title}\n')
         if header.composer:
-            updated_header.append(f'C:{header.composer}\n')
+            updated_header.append(f'# C:{header.composer}\n')
         if header.source:
-            updated_header.append(f'Z:{header.source}\n')
+            updated_header.append(f'# Z:{header.source}\n')
         updated_header.append('\n')
 
-        # Group annotations by MIDI measure number
+        # Group annotations by MIDI measure number. One ABCX measure may map to
+        # multiple expanded MIDI measures (repeats), so replicate annotations.
         annotations_by_measure = defaultdict(list)
+        abcx_to_midi = defaultdict(list)
+        for midi_measure, abcx_measure in midi_to_abcx.items():
+            abcx_to_midi[abcx_measure].append(midi_measure)
         for ann in annotations:
-            # Map ABCX measure to MIDI measure
-            midi_measure = None
-            for midi_m, abcx_m in midi_to_abcx.items():
-                if abcx_m == ann.measure_num:
-                    midi_measure = midi_m
-                    break
-
-            if midi_measure is not None:
+            for midi_measure in abcx_to_midi.get(ann.measure_num, []):
                 annotations_by_measure[midi_measure].append(ann)
-
-        # Parse data lines to find measure boundaries
-        measure_starts = {}  # midi_measure_num -> line_index
-        current_measure = None
-
-        for i, line in enumerate(data_lines):
-            # Check if this is a measure marker line
-            if line.startswith('<M>') or line.startswith('M\t'):
-                # Extract measure number from line
-                # Format: <M><V000>... or M\t0\t...
-                match = re.match(r'<M><V(\d+)>', line)
-                if match:
-                    measure_num = int(match.group(1)) + 1  # V000 = measure 1
-                    measure_starts[measure_num] = i
-                    current_measure = measure_num
-                else:
-                    # TSV format: M\t{local_index}\t...
-                    parts = line.split('\t')
-                    if len(parts) >= 2 and parts[0] == 'M':
-                        # This is a measure marker, but we need global measure number
-                        # For now, increment
-                        if current_measure is None:
-                            current_measure = 1
-                        else:
-                            current_measure += 1
-                        measure_starts[current_measure] = i
 
         # Build output with annotations inserted
         output_lines = updated_header.copy()
@@ -640,24 +840,34 @@ def merge_annotations_into_tsv(
             meter_token = f'meter_{header.meter}'
             output_lines.append(f'MT\t{meter_token}\tNIL\tNIL\n')
 
-        # Insert data lines with annotations
-        for i, line in enumerate(data_lines):
-            # Check if we should insert annotations before this line
-            for measure_num, start_idx in measure_starts.items():
-                if i == start_idx and measure_num in annotations_by_measure:
-                    # Insert annotations for this measure
-                    for ann in annotations_by_measure[measure_num]:
-                        ann_line = _format_annotation(ann)
-                        if ann_line:
-                            output_lines.append(ann_line)
+        current_measure_num = 0
+        current_measure_lines: list[str] | None = None
 
-            # Add the original line
-            output_lines.append(line)
+        def flush_measure() -> None:
+            nonlocal current_measure_lines
+            if current_measure_lines is None:
+                return
+            anns = annotations_by_measure.get(current_measure_num, [])
+            output_lines.extend(_insert_annotations_into_measure_lines(current_measure_lines, anns))
+            current_measure_lines = None
+
+        for line in data_lines:
+            if line.startswith('M\t'):
+                flush_measure()
+                current_measure_num += 1
+                current_measure_lines = [line]
+            elif current_measure_lines is not None:
+                current_measure_lines.append(line)
+            else:
+                output_lines.append(line)
+
+        flush_measure()
 
         # Write output
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        normalized_lines = [line if line.endswith('\n') else line + '\n' for line in output_lines]
         with output_path.open('w', encoding='utf-8') as f:
-            f.writelines(output_lines)
+            f.writelines(normalized_lines)
 
         return True
 
@@ -699,6 +909,157 @@ def _format_annotation(ann: Annotation) -> str | None:
         return f'FM\tNIL\tNIL\tNIL\n'
 
     return None
+
+
+NOTE_EVENT_RE = re.compile(r'^[A-G]#?-?\d+L?$')
+
+
+def _is_note_event(event: str) -> bool:
+    return NOTE_EVENT_RE.fullmatch(event) is not None
+
+
+def _is_extension_event(event: str) -> bool:
+    return event in {"EXD", "EXO"}
+
+
+def _parse_note_pitch(event: str) -> int | None:
+    note = event[:-1] if event.endswith("L") else event
+    match = re.fullmatch(r'([A-G]#?)(-?\d+)', note)
+    if not match:
+        return None
+    pitch_name, octave_text = match.groups()
+    octave = int(octave_text)
+    semitone = {
+        "C": 0,
+        "C#": 1,
+        "D": 2,
+        "D#": 3,
+        "E": 4,
+        "F": 5,
+        "F#": 6,
+        "G": 7,
+        "G#": 8,
+        "A": 9,
+        "A#": 10,
+        "B": 11,
+    }[pitch_name]
+    return (octave + 2) * 12 + semitone
+
+
+def _pitch_classes(pitches: set[int] | tuple[int, ...]) -> set[int]:
+    return {pitch % 12 for pitch in pitches}
+
+
+def _insert_annotations_into_measure_lines(
+    measure_lines: list[str],
+    annotations: list[Annotation],
+) -> list[str]:
+    if not measure_lines:
+        return []
+    if not annotations:
+        return measure_lines
+
+    priority = {
+        "ornament": 0,
+        "articulation": 1,
+        "range_start": 2,
+        "range_end": 3,
+        "fermata": 4,
+        "dynamic": 5,
+        "expression": 6,
+        "pedal": 7,
+    }
+    ordered_annotations = sorted(
+        annotations,
+        key=lambda ann: (ann.position, priority.get(ann.type, 99)),
+    )
+    body = measure_lines[1:]
+
+    onset_group_ranges: list[tuple[int, int, int, set[int]]] = []
+    current_group_start: int | None = None
+    current_group_end: int | None = None
+    current_insert_start: int | None = None
+    current_group_insert_start: int | None = None
+    current_group_pitches: set[int] = set()
+    for idx, line in enumerate(body):
+        parts = line.rstrip('\n').split('\t')
+        if len(parts) < 4:
+            continue
+        event, _value, _duration, offset = parts[:4]
+        if _is_extension_event(event):
+            current_insert_start = idx
+            continue
+        if not _is_note_event(event):
+            continue
+        if current_group_start is None or offset != '0':
+            if current_group_start is not None and current_group_end is not None:
+                insert_start = (
+                    current_group_insert_start
+                    if current_group_insert_start is not None
+                    else current_group_start
+                )
+                onset_group_ranges.append((insert_start, current_group_start, current_group_end, current_group_pitches))
+            current_group_start = idx
+            current_group_insert_start = current_insert_start
+            current_insert_start = None
+            current_group_pitches = set()
+        current_group_end = idx
+        pitch = _parse_note_pitch(event)
+        if pitch is not None:
+            current_group_pitches.add(pitch)
+
+    if current_group_start is not None and current_group_end is not None:
+        insert_start = (
+            current_group_insert_start
+            if current_group_insert_start is not None
+            else current_group_start
+        )
+        onset_group_ranges.append((insert_start, current_group_start, current_group_end, current_group_pitches))
+
+    result = [measure_lines[0]]
+    if not onset_group_ranges:
+        for ann in ordered_annotations:
+            ann_line = _format_annotation(ann)
+            if ann_line:
+                result.append(ann_line)
+        result.extend(body)
+        return result
+
+    annotations_by_start: dict[int, list[str]] = defaultdict(list)
+    annotations_by_end: dict[int, list[str]] = defaultdict(list)
+    for ann in ordered_annotations:
+        position = min(ann.position, len(onset_group_ranges) - 1)
+        if ann.pitch_anchor:
+            anchor_pitches = set(ann.pitch_anchor)
+            anchor_pitch_classes = _pitch_classes(ann.pitch_anchor)
+            for group_idx in range(position, len(onset_group_ranges)):
+                _insert_start, _group_start, _group_end, group_pitches = onset_group_ranges[group_idx]
+                if anchor_pitches.issubset(group_pitches):
+                    position = group_idx
+                    break
+                if anchor_pitch_classes.issubset(_pitch_classes(group_pitches)):
+                    position = group_idx
+                    break
+        insert_start, group_start, group_end, _group_pitches = onset_group_ranges[position]
+        ann_line = _format_annotation(ann)
+        if ann_line is None:
+            continue
+        has_extension_prefix = insert_start != group_start
+        if has_extension_prefix:
+            annotations_by_start[insert_start].append(ann_line)
+        elif ann.type == "pedal":
+            annotations_by_end[group_end].append(ann_line)
+        else:
+            annotations_by_start[insert_start].append(ann_line)
+
+    for idx, line in enumerate(body):
+        for ann_line in annotations_by_start.get(idx, []):
+            result.append(ann_line)
+        result.append(line)
+        for ann_line in annotations_by_end.get(idx, []):
+            result.append(ann_line)
+
+    return result
 
 
 def process_score(task: dict[str, str]) -> dict[str, Any]:
@@ -751,7 +1112,6 @@ def process_score(task: dict[str, str]) -> dict[str, Any]:
         structure, ok = _build_score_structure(
             score_midi_path,
             score_abcx_path,
-            score_abcx_path.parent,
             _worker_midi_tsv,
         )
         if not ok or structure is None:
@@ -809,6 +1169,10 @@ def build_tasks(metadata_csv: Path, pianocore_root: Path) -> list[dict[str, str]
                     midi_full = pianocore_root / "refined" / score_midi_rel
                 else:
                     midi_full = pianocore_root / "raw" / score_midi_rel
+                if midi_full and not midi_full.exists():
+                    midi_full = None
+            if midi_full is None:
+                midi_full = _resolve_score_midi_from_piece(abcx_full, pianocore_root)
 
             # Output path: same directory as ABCX, with ABCX filename stem
             output_filename = abcx_full.stem + ".annotated_score.mid.tsv"
@@ -821,6 +1185,14 @@ def build_tasks(metadata_csv: Path, pianocore_root: Path) -> list[dict[str, str]
             })
 
     return tasks
+
+
+def cleanup_legacy_annotated_tsvs(output_dir: Path) -> int:
+    removed = 0
+    for path in output_dir.rglob("annotated_score.mid.tsv"):
+        path.unlink(missing_ok=True)
+        removed += 1
+    return removed
 
 
 def main() -> None:
@@ -863,6 +1235,8 @@ def main() -> None:
     # Summary
     success_count = sum(1 for r in results if r["ok"])
     print(f"\nCompleted: {success_count}/{len(results)} successful")
+    removed_legacy = cleanup_legacy_annotated_tsvs(DEFAULT_OUTPUT_DIR)
+    print(f"Legacy annotated TSVs removed: {removed_legacy}")
 
 
 if __name__ == "__main__":
