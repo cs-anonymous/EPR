@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export PYTHONPATH="${ROOT_DIR}:${PYTHONPATH:-}"
 
-ROUNDS_DIR="${ROUNDS_DIR:-${ROOT_DIR}/PianoCoReS/CorporaV2/language_cpt_rounds}"
+ROUNDS_DIR="${ROUNDS_DIR:-${ROOT_DIR}/data/CorporaV2/language_cpt_rounds}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-${ROOT_DIR}/output/cpt_qwen35_08b_full_rounds}"
 BASE_MODEL="${BASE_MODEL:-${ROOT_DIR}/Qwen3.5-0.8B-LM-MIDI-Resized}"
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"

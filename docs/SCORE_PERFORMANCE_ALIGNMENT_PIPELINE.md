@@ -55,7 +55,7 @@ PianoCoRe/aligned/<Composer>/<Piece>/
 
 | 脚本 | 功能 |
 |------|------|
-| `scripts/fix_abcx_repeats.py` | 修复 ABCX 中内嵌的 `::` 标记 |
+| `backup/scripts_legacy/fix_abcx_repeats.py` | 修复 ABCX 中内嵌的 `::` 标记 |
 | `scripts/align_score_performance.py` | 主流程：提取小节 → 解析 ABCX → 对齐演奏 → 生成 TSV |
 | `wave-roll/midi_tsv.py` | MIDI-TSV 模块，解析 MIDI、构建 tempo map |
 | `xml2abc/xml2abc.py` | MusicXML → ABCX 转换（生成 `PianoCoRe_output`） |
@@ -67,7 +67,7 @@ PianoCoRe/aligned/<Composer>/<Piece>/
 MXL→ABCX 转换时，volta 边界（`::`）可能被错误地内嵌在小节内容中而非作为小节分隔符。修复脚本会将每个含 `::` 的小节段拆分为两个独立小节。
 
 ```bash
-python scripts/fix_abcx_repeats.py --input-dir PianoCoRe_output --output-dir PianoCoRe_output
+python backup/scripts_legacy/fix_abcx_repeats.py --input-dir PianoCoRe_output --output-dir PianoCoRe_output
 ```
 
 修复前：

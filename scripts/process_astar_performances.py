@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Process A* performances to generate MIDI TSV files.
 
-Reads PianoCoReS/Astar_metadata.csv and processes all A* performances
+Reads data/Astar_metadata.csv and processes all A* performances
 that are not in CoRe-S, generating performance MIDI TSV files.
 """
 
@@ -128,13 +128,13 @@ def update_metadata_with_tsv_paths(
         # Extract piece_path from abcx_path
         piece_rel = abcx_path.replace('PianoCoRe/score/', '').replace('/score.abcx', '')
 
-        # Build TSV path: PianoCoReS/miditsv/Composer/Piece/perf_refined.mid.tsv
+        # Build TSV path: data/miditsv/Composer/Piece/perf_refined.mid.tsv
         perf_name = Path(perf_midi).name
         tsv_path = output_dir / piece_rel / f"{perf_name}.tsv"
 
         # Check if TSV file exists
         if tsv_path.exists():
-            # Store relative path from PianoCoReS/
+            # Store relative path from data/
             tsv_rel = str(tsv_path.relative_to(output_dir.parent))
             tsv_paths.append(tsv_rel)
         else:
@@ -152,7 +152,7 @@ def main():
     parser.add_argument(
         "--metadata",
         type=Path,
-        default=Path("PianoCoReS/performance_Astar_metadata.csv"),
+        default=Path("data/performance_Astar_metadata.csv"),
         help="Path to Astar_metadata.csv",
     )
     parser.add_argument(
@@ -164,13 +164,13 @@ def main():
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("PianoCoReS/miditsv"),
+        default=Path("data/miditsv"),
         help="Output directory for TSV files",
     )
     parser.add_argument(
         "--output-metadata",
         type=Path,
-        default=Path("PianoCoReS/performance_Astar_metadata_updated.csv"),
+        default=Path("data/performance_Astar_metadata_updated.csv"),
         help="Output metadata CSV with TSV paths",
     )
     parser.add_argument(

@@ -76,7 +76,7 @@ def generate_metadata_rows(dataset_name: str, dataset_dir: Path, split: str = 't
             for ext in ['.abc', '.mxl', '.xml', '.musicxml', '.mscx']:
                 orig_file = original_dir / f"{score_id}{ext}"
                 if orig_file.exists():
-                    original_path = f"PianoCoReS/unpaired_abcx/{dataset_name}/original/{orig_file.name}"
+                    original_path = f"data/unpaired_abcx/{dataset_name}/original/{orig_file.name}"
                     break
 
         # Build row
@@ -91,8 +91,8 @@ def generate_metadata_rows(dataset_name: str, dataset_dir: Path, split: str = 't
             'score_xml_path': '',
             'score_midi_path': '',
             'refined_score_midi_path': '',
-            'score_abcx_path': f"PianoCoReS/unpaired_abcx/{dataset_name}/abcx/{abcx_file.name}",
-            'score_aligned_path': f"PianoCoReS/unpaired_abcx/{dataset_name}/abcx_aligned/{aligned_file.name}",
+            'score_abcx_path': f"data/unpaired_abcx/{dataset_name}/abcx/{abcx_file.name}",
+            'score_aligned_path': f"data/unpaired_abcx/{dataset_name}/abcx_aligned/{aligned_file.name}",
             'score_aligned_mini_path': '',
             'score_json_path': '',
             'score_json_mini_path': '',
@@ -113,13 +113,13 @@ def main():
     parser.add_argument(
         '--unpaired-dir',
         type=Path,
-        default=Path('PianoCoReS/unpaired_abcx'),
+        default=Path('data/unpaired_abcx'),
         help='Unpaired ABCX root directory'
     )
     parser.add_argument(
         '--output',
         type=Path,
-        default=Path('PianoCoReS/score_metadata_new.csv'),
+        default=Path('data/score_metadata_new.csv'),
         help='Output CSV file'
     )
     parser.add_argument(
@@ -169,7 +169,7 @@ def main():
     print(f"\nDone! Generated {len(all_rows)} metadata rows")
     print(f"Output: {args.output}")
     print(f"\nTo append to existing metadata.csv:")
-    print(f"  tail -n +2 {args.output} >> EPR/PianoCoReS/score_metadata.csv")
+    print(f"  tail -n +2 {args.output} >> EPR/data/score_metadata.csv")
 
 
 if __name__ == '__main__':

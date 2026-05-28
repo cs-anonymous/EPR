@@ -1,13 +1,13 @@
 #!/bin/bash
 # Language CPT (Continual Pre-Training) with MS-SWIFT.
 #
-# Train Qwen3.5-4B LoRA on the language_cpt_s2 dataset from PianoCoReS/CoReS
+# Train Qwen3.5-4B LoRA on the language_cpt_s2 dataset from backup/legacy_CoReS
 # using DDP on 2 GPUs (0-1).
 
 set -euo pipefail
 
 MODEL_PATH="${MODEL_PATH:-./Qwen3.5-4B}"
-TRAIN_DATA="${TRAIN_DATA:-./PianoCoReS/CoReS/language_cpt_s2_shuffled.jsonl}"
+TRAIN_DATA="${TRAIN_DATA:-./backup/legacy_CoReS/language_cpt_s2_shuffled.jsonl}"
 OUTPUT_DIR="${OUTPUT_DIR:-./output/language-cpt}"
 
 # GPU configuration for DDP on GPU 0-1

@@ -17,7 +17,7 @@
 /home/sy/2026/Music/EPR/
 ├── docs/
 │   └── ASAP_ANNOTATION_GENERATION.md    # 本文档
-├── scripts/generate_asap_annotations.py # 统一的生成脚本
+├── backup/scripts_legacy/generate_asap_annotations.py # 统一的生成脚本
 ├── check_progress.sh                    # 进度监控脚本
 └── data/asap-dataset/
     ├── util/nak_alignment/              # Nakamura对齐工具
@@ -62,7 +62,7 @@ cp AlignmentTool/MIDIToMIDIAlign.sh nak_alignment/
 ### 单个Performance处理
 
 ```bash
-python scripts/generate_asap_annotations.py \
+python backup/scripts_legacy/generate_asap_annotations.py \
   --score-midi data/asap-dataset/Chopin/Etudes_op_25/1/midi_score.mid \
   --perf-midi data/asap-dataset/Chopin/Etudes_op_25/1/Erice03.mid \
   --nak-tool-dir data/asap-dataset/util/nak_alignment \
@@ -74,18 +74,18 @@ python scripts/generate_asap_annotations.py \
 
 ```bash
 # 处理所有performances
-python scripts/generate_asap_annotations.py \
+python backup/scripts_legacy/generate_asap_annotations.py \
   --asap-root data/asap-dataset \
   --nak-tool-dir data/asap-dataset/util/nak_alignment
 
 # 只处理前10个（测试）
-python scripts/generate_asap_annotations.py \
+python backup/scripts_legacy/generate_asap_annotations.py \
   --asap-root data/asap-dataset \
   --nak-tool-dir data/asap-dataset/util/nak_alignment \
   --limit 10
 
 # 后台运行
-nohup python scripts/generate_asap_annotations.py \
+nohup python backup/scripts_legacy/generate_asap_annotations.py \
   --asap-root data/asap-dataset \
   --nak-tool-dir data/asap-dataset/util/nak_alignment \
   > asap_generation.log 2>&1 &
@@ -208,7 +208,7 @@ TSV格式（制表符分隔）：
 
 - `generate_asap_annotations_complete.py` - 完整的annotation生成脚本
 - `batch_generate_asap_annotations.py` - 批量处理脚本
-- `scripts/generate_asap_annotations.py` - 原有的简化版本（不完整）
+- `backup/scripts_legacy/generate_asap_annotations.py` - 原有的简化版本（不完整）
 
 ### 关键文件
 

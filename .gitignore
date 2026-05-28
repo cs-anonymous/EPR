@@ -15,3 +15,6 @@ sft_data
 PianistTransformer
 __pycache__
 miditsv
+backup/*
+!backup/scripts_legacy/
+!backup/scripts_legacy/**

@@ -29,15 +29,15 @@ except ModuleNotFoundError:
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_METADATA = ROOT / "PianoCoRe" / "metadata.csv"
-DEFAULT_SCORE_METADATA = ROOT / "PianoCoReS" / "score_metadata.csv"
-DEFAULT_PERF_S_METADATA = ROOT / "PianoCoReS" / "performance_S_metadata.csv"
-DEFAULT_OUTPUT_DIR = ROOT / "PianoCoReS" / "miditsv"
+DEFAULT_SCORE_METADATA = ROOT / "data" / "score_metadata.csv"
+DEFAULT_PERF_S_METADATA = ROOT / "data" / "performance_S_metadata.csv"
+DEFAULT_OUTPUT_DIR = ROOT / "data" / "miditsv"
 DEFAULT_PIANOCORE_ROOT = ROOT / "PianoCoRe"
 
 OLD_SCORE_PREFIXES = (
-    "PianoCoReS/aligned/",
+    "data/aligned/",
     "PianoCoRe/aligned/",
-    "PianoCoReS/miditsv/",
+    "data/miditsv/",
     "PianoCoRe/score/",
 )
 
@@ -143,7 +143,7 @@ def resolve_score_midi_path(score_rel: str, pianocore_root: Path) -> Path:
 
 
 def score_tsv_rel_path(piece_rel: str) -> str:
-    return (Path("PianoCoReS") / "miditsv" / piece_rel / "score.mid.tsv").as_posix()
+    return (Path("data") / "miditsv" / piece_rel / "score.mid.tsv").as_posix()
 
 
 def resolve_fallback_score_rel(piece_rel: str, pianocore_root: Path) -> str:

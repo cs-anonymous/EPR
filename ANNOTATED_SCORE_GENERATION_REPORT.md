@@ -22,10 +22,10 @@
 
 #### 1. Paired scores (有现成 score MIDI)
 - **数量**：1,600 文件
-- **位置**：`PianoCoReS/miditsv/*/score.abcx`
+- **位置**：`data/miditsv/*/score.abcx`
 - **处理方式**：直接合并注释到现有 TSV
 - **成功率**：100%
-- **说明**：其中 256 个文件的 ABCX 从 `PianoCoReS/aligned/` 复制而来
+- **说明**：其中 256 个文件的 ABCX 从 `data/aligned/` 复制而来
 
 #### 2. Unpaired scores (需要从 ABCX 生成)
 - **总数**：5,657 文件
@@ -44,11 +44,11 @@
 
 ### 失败文件 (5个)
 
-1. `PianoCoReS/unpaired_abcx/PDMX/abcx/1184646.abcx`
-2. `PianoCoReS/unpaired_abcx/MAESTRO/abcx/liszt_S162.abcx`
-3. `PianoCoReS/unpaired_abcx/MAESTRO/abcx/mozart_K284.abcx`
-4. `PianoCoReS/unpaired_abcx/MAESTRO/abcx/mozart_K333.abcx`
-5. `PianoCoReS/unpaired_abcx/IMSLP/abcx/bach_bwv0811_1947-917230-PMLP587962-English_suite_6_BWV_811.abcx`
+1. `data/unpaired_abcx/PDMX/abcx/1184646.abcx`
+2. `data/unpaired_abcx/MAESTRO/abcx/liszt_S162.abcx`
+3. `data/unpaired_abcx/MAESTRO/abcx/mozart_K284.abcx`
+4. `data/unpaired_abcx/MAESTRO/abcx/mozart_K333.abcx`
+5. `data/unpaired_abcx/IMSLP/abcx/bach_bwv0811_1947-917230-PMLP587962-English_suite_6_BWV_811.abcx`
 
 **失败原因**：这些文件使用了复杂的多声部格式（8-10个声部），abc2midi 可能生成了 MIDI 但格式异常，导致 TSV 生成失败。
 
@@ -83,14 +83,14 @@
 ## 输出文件
 
 ### Metadata 更新
-`PianoCoReS/score_metadata.csv` 已更新，新增列：
+`data/score_metadata.csv` 已更新，新增列：
 - **`annotated_score_midi_path`**：指向生成的 annotated score MIDI TSV 文件路径
   - 如果文件成功生成，该列包含完整路径
   - 如果生成失败或文件不存在，该列为空
 
 ### 文件位置
-- Paired: `PianoCoReS/miditsv/{composer}/{piece}/score.annotated_score.mid.tsv`
-- Unpaired: `PianoCoReS/unpaired_abcx/{dataset}/abcx/{filename}.annotated_score.mid.tsv`
+- Paired: `data/miditsv/{composer}/{piece}/score.annotated_score.mid.tsv`
+- Unpaired: `data/unpaired_abcx/{dataset}/abcx/{filename}.annotated_score.mid.tsv`
 
 ### 格式
 - 版本：MIDI-TSV v0.4
@@ -112,7 +112,7 @@
 
 ## 结论
 
-成功为 PianoCoReS 数据集的 **7,252 个文件**生成了 annotated score MIDI TSV。
+成功为 data 数据集的 **7,252 个文件**生成了 annotated score MIDI TSV。
 
 ### 最终统计
 - **Metadata 总数**：7,257 个 scores

@@ -162,7 +162,7 @@ def main():
     parser.add_argument(
         '--dataset-dir',
         type=Path,
-        default=Path('PianoCoReS/unpaired_abcx/IMSLP'),
+        default=Path('data/unpaired_abcx/IMSLP'),
         help='Dataset directory'
     )
     parser.add_argument(

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build measure-boundary language CPT corpora from PianoCoReS metadata."""
+"""Build measure-boundary language CPT corpora from data metadata."""
 
 from __future__ import annotations
 
@@ -124,12 +124,12 @@ def extract_annotated_header_lines(tsv_path: Path, score_abcx_path: Path | None)
 
 def resolve_perf_tsv(row: dict[str, str]) -> Path | None:
     value = (row.get("performance_tsv_path") or "").strip()
-    if value.startswith("PianoCoReS/"):
+    if value.startswith("data/"):
         path = ROOT / value
         return path if path.exists() else None
     rel = (row.get("tsv_path") or "").strip()
     if rel:
-        path = ROOT / "PianoCoReS" / rel
+        path = ROOT / "data" / rel
         return path if path.exists() else None
     if value:
         path = ROOT / value
@@ -361,22 +361,22 @@ def main() -> None:
     parser.add_argument(
         "--astar-metadata",
         type=Path,
-        default=ROOT / "PianoCoReS" / "performance_Astar_metadata.csv",
+        default=ROOT / "data" / "performance_Astar_metadata.csv",
     )
     parser.add_argument(
         "--perf-s-metadata",
         type=Path,
-        default=ROOT / "PianoCoReS" / "performance_S_metadata.csv",
+        default=ROOT / "data" / "performance_S_metadata.csv",
     )
     parser.add_argument(
         "--score-metadata",
         type=Path,
-        default=ROOT / "PianoCoReS" / "score_metadata.csv",
+        default=ROOT / "data" / "score_metadata.csv",
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=ROOT / "PianoCoReS" / "CorporaV2" / "language_cpt",
+        default=ROOT / "data" / "CorporaV2" / "language_cpt",
     )
     args = parser.parse_args()
 

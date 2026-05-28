@@ -192,12 +192,12 @@ def main() -> None:
     parser.add_argument(
         "--corpora-dir",
         type=Path,
-        default=Path("PianoCoReS/CorporaV2/language_cpt"),
+        default=Path("data/CorporaV2/language_cpt"),
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("PianoCoReS/CorporaV2/language_cpt_rounds"),
+        default=Path("data/CorporaV2/language_cpt_rounds"),
     )
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()

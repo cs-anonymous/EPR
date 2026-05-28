@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Rebuild PianoCoReS aligned ABCX and MIDI-TSV files from metadata.
+"""Rebuild data aligned ABCX and MIDI-TSV files from metadata.
 
 This is a small wrapper around the current metadata-driven alignment pipeline.
-It adapts the PianoCoReS manifest, whose score paths may already point at an
+It adapts the data manifest, whose score paths may already point at an
 older output tree, back to the canonical PianoCoRe/score source paths before
 regenerating outputs.
 """
@@ -19,9 +19,9 @@ from pathlib import Path
 
 
 OLD_SCORE_PREFIXES = (
-    "PianoCoReS/aligned/",
+    "data/aligned/",
     "PianoCoRe/aligned/",
-    "PianoCoReS/miditsv/",
+    "data/miditsv/",
 )
 
 
@@ -157,8 +157,8 @@ def update_and_verify_metadata(input_csv: Path, output_csv: Path, output_dir: Pa
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--metadata", type=Path, default=Path("PianoCoReS/metadata.csv"))
-    parser.add_argument("--output-dir", type=Path, default=Path("PianoCoReS/miditsv"))
+    parser.add_argument("--metadata", type=Path, default=Path("data/performance_S_metadata.csv"))
+    parser.add_argument("--output-dir", type=Path, default=Path("data/miditsv"))
     parser.add_argument("--pianocore-root", type=Path, default=Path("PianoCoRe"))
     parser.add_argument("--jobs", type=int, default=16)
     parser.add_argument("--tier", choices=["a", "a_star", "b", "all"], default="all")

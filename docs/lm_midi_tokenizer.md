@@ -519,7 +519,7 @@ The `L` suffix in the TSV note name indicates lower staff. During tokenization:
 
 ### Articulation Subtypes (Slot 2 for A/AL)
 
-Based on 7257 score files in PianoCoReS corpus:
+Based on 7257 score files in data corpus:
 
 ```python
 <accent>        # !>! (119356 occurrences)

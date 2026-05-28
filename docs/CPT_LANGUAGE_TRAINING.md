@@ -6,7 +6,7 @@ Last updated: 2026-05-19
 
 - Script: `cpt_language.sh`
 - Model: `./Qwen3.5-4B`
-- Dataset: `./PianoCoReS/CoReS/language_cpt_s2_shuffled.jsonl`
+- Dataset: `./backup/legacy_CoReS/language_cpt_s2_shuffled.jsonl`
 - GPUs: `0,1`
 
 The current CPT flow uses the merged and shuffled JSONL file instead of pointing Swift at the `language_cpt_s2/` directory directly.

@@ -11,7 +11,7 @@ CHECKPOINT_NAME="${CHECKPOINT_NAME:-language_cpt_s1_abcx2pm_sft_s1}"
 OUTPUT_DIR="${OUTPUT_DIR:-./output/${CHECKPOINT_NAME}}"
 TMP_DIR="${TMP_DIR:-${OUTPUT_DIR}.tmp-merge}"
 RUN_SMOKE="${RUN_SMOKE:-1}"
-SMOKE_INPUT="${SMOKE_INPUT:-./PianoCoReS/Corpora/abcx2pm_sft/abcx2pm_coldstart_test.jsonl}"
+SMOKE_INPUT="${SMOKE_INPUT:-./backup/legacy_Corpora/abcx2pm_sft/abcx2pm_coldstart_test.jsonl}"
 SMOKE_COUNT="${SMOKE_COUNT:-1}"
 SMOKE_OUT_DIR="${SMOKE_OUT_DIR:-${OUTPUT_DIR}/smoke}"
 SMOKE_MAX_TOKENS="${SMOKE_MAX_TOKENS:-128}"
@@ -141,13 +141,13 @@ if [[ "$RUN_SMOKE" == "1" ]]; then
     require_path "$SMOKE_INPUT"
     mkdir -p "$SMOKE_OUT_DIR"
 
-    python scripts/eval_abcx2pm_test.py prepare \
+    python backup/scripts_legacy/eval_abcx2pm_test.py prepare \
       --input "$SMOKE_INPUT" \
       --out-dir "$SMOKE_OUT_DIR" \
       --count "$SMOKE_COUNT" \
       --distinct-works
 
-    run_vllm_python scripts/vllm_abcx2pm_smoke.py \
+    run_vllm_python backup/scripts_legacy/vllm_abcx2pm_smoke.py \
       --model "$OUTPUT_DIR" \
       --input "$SMOKE_OUT_DIR/infer_messages.jsonl" \
       --output "$SMOKE_OUT_DIR/results.jsonl" \
@@ -158,7 +158,7 @@ if [[ "$RUN_SMOKE" == "1" ]]; then
       --enforce-eager \
       --limit "$SMOKE_COUNT"
 
-    python scripts/eval_abcx2pm_test.py postprocess \
+    python backup/scripts_legacy/eval_abcx2pm_test.py postprocess \
       --manifest "$SMOKE_OUT_DIR/manifest.jsonl" \
       --results "$SMOKE_OUT_DIR/results.jsonl" \
       --out-dir "$SMOKE_OUT_DIR/decoded"

@@ -39,9 +39,9 @@ except ModuleNotFoundError:
     from lm_midi_tsv import midi_pitch_to_logic_note
 
 
-DEFAULT_METADATA = ROOT / "PianoCoReS" / "score_metadata.csv"
+DEFAULT_METADATA = ROOT / "data" / "score_metadata.csv"
 DEFAULT_PIANOCORE_ROOT = ROOT / "PianoCoRe"
-DEFAULT_OUTPUT_DIR = ROOT / "PianoCoReS" / "miditsv"
+DEFAULT_OUTPUT_DIR = ROOT / "data" / "miditsv"
 SCORE_MIDI_CANDIDATE_PREFIXES = ("score_PDMX", "score_MS", "score_ASAP", "score_ATEPP")
 
 # Annotation token mappings (from lm_midi_tokenizer.md)

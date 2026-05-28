@@ -824,8 +824,8 @@ def update_corpora_readme(readme_path: Path, summaries: dict[str, dict]) -> None
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--metadata", type=Path, default=ROOT / "PianoCoReS" / "metadata.csv")
-    parser.add_argument("--corpora-root", type=Path, default=ROOT / "PianoCoReS" / "Corpora")
+    parser.add_argument("--metadata", type=Path, default=ROOT / "data" / "performance_S_metadata.csv")
+    parser.add_argument("--corpora-root", type=Path, default=ROOT / "data" / "CorporaV2")
     parser.add_argument("--tokenizer", type=Path, default=ROOT / "Qwen3.5-4B-LM-MIDI-Resized")
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--jobs", type=int, default=max(1, (mp.cpu_count() or 1) // 2))
