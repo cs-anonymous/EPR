@@ -46,6 +46,25 @@ EXTENSION_EVENTS = {
     "EXD": "<EXD>",
     "EXO": "<EXO>",
 }
+ANNOTATION_EVENTS = {
+    "A": "<A>",
+    "AL": "<AL>",
+    "OR": "<OR>",
+    "ORL": "<ORL>",
+    "D": "<D>",
+    "DL": "<DL>",
+    "RS": "<RS>",
+    "RSL": "<RSL>",
+    "RE": "<RE>",
+    "REL": "<REL>",
+    "EX": "<EX>",
+    "EXL": "<EXL>",
+    "FM": "<FM>",
+    "PM": "<PM>",
+    "TP": "<TP>",
+    "MT": "<MT>",
+    "KS": "<KS>",
+}
 NOTE_RE = re.compile(r"^([A-G])(#?)(-?\d+)(L?)$")
 
 
@@ -101,6 +120,12 @@ def nil_token() -> str:
     return "<NIL>"
 
 
+def raw_symbol_token(value: str) -> str:
+    if not value:
+        raise ValueError("annotation symbol cannot be empty")
+    return f"<{value}>"
+
+
 def split_u16(value: int) -> tuple[int, int]:
     _require_range(value, 0, MAX_U16, "16-bit timing value")
     return divmod(value, 256)
@@ -124,9 +149,7 @@ def parse_lm_midi_tsv(text: str) -> list[tuple[str, str, str, str]]:
         value = parts[1].strip()
         duration = parts[2].strip()
         offset = parts[3].strip()
-        _validate_tsv_slot(value, f"Line {line_idx} value")
-        _validate_tsv_slot(duration, f"Line {line_idx} duration")
-        _validate_tsv_slot(offset, f"Line {line_idx} offset")
+        _validate_tsv_row(event, value, duration, offset, line_idx)
         rows.append((event, value, duration, offset))
     return rows
 
@@ -173,6 +196,25 @@ def row_to_lm_midi_events(
         _require_range(lo_u8, 0, MAX_U8, f"{event} lo")
         return [f"{EXTENSION_EVENTS[event]}{nil_token()}{t_token(hi_u8)}{t_token(lo_u8)}"]
 
+    if event in ANNOTATION_EVENTS:
+        if event == "FM":
+            if value != "NIL" or duration != "NIL" or offset != "NIL":
+                raise ValueError("FM event must use NIL in all trailing slots")
+            return [f"{ANNOTATION_EVENTS[event]}{nil_token()}{nil_token()}{nil_token()}"]
+        if event == "TP":
+            if not re.fullmatch(r"V\d{3}", value):
+                raise ValueError(f"TP value must be Vxxx, got {value!r}")
+            if duration != "NIL" or offset != "NIL":
+                raise ValueError("TP event must use NIL in duration/offset")
+            return [f"{ANNOTATION_EVENTS[event]}<{value}>{nil_token()}{nil_token()}"]
+        if value == "NIL":
+            slot2 = nil_token()
+        else:
+            slot2 = raw_symbol_token(value)
+        if duration != "NIL" or offset != "NIL":
+            raise ValueError(f"{event} event must use NIL in duration/offset")
+        return [f"{ANNOTATION_EVENTS[event]}{slot2}{nil_token()}{nil_token()}"]
+
     if event in PEDAL_EVENTS:
         value_u8 = _parse_required_int(value, f"{event} value")
         duration_u8 = _parse_required_int(duration, f"{event} duration")
@@ -215,6 +257,9 @@ def semantic_event_to_tsv_rows(event: str, value: int, duration: int, offset: in
         offset_slot = _tsv_timing_slot_or_ext(offset, "EXO", rows)
         rows.append((event, str(value), "0", offset_slot))
         return rows
+
+    if event in ANNOTATION_EVENTS:
+        raise ValueError(f"semantic annotation event is not supported by semantic_event_to_tsv_rows: {event}")
 
     pitch = logic_note_to_midi_pitch(event)
     _require_range(pitch, 0, 127, "pitch")
@@ -267,6 +312,46 @@ def _validate_tsv_slot(value: str, label: str) -> None:
     if value == TO_EXT:
         return
     _parse_required_int(value, label)
+
+
+def _validate_tsv_row(event: str, value: str, duration: str, offset: str, line_idx: int) -> None:
+    label = f"Line {line_idx}"
+    if event in ANNOTATION_EVENTS:
+        if event == "FM":
+            if value != "NIL" or duration != "NIL" or offset != "NIL":
+                raise ValueError(f"{label}: FM must be FM\\tNIL\\tNIL\\tNIL")
+            return
+        if event == "TP":
+            if not re.fullmatch(r"V\d{3}", value):
+                raise ValueError(f"{label}: TP value must be Vxxx, got {value!r}")
+            if duration != "NIL" or offset != "NIL":
+                raise ValueError(f"{label}: TP must use NIL in duration/offset")
+            return
+        if duration != "NIL" or offset != "NIL":
+            raise ValueError(f"{label}: {event} must use NIL in duration/offset")
+        return
+
+    if event in EXTENSION_EVENTS:
+        _validate_tsv_slot(value, f"{label} value")
+        _validate_tsv_slot(duration, f"{label} duration")
+        _validate_tsv_slot(offset, f"{label} offset")
+        return
+
+    if event in STRUCTURAL_EVENTS:
+        _validate_tsv_slot(value, f"{label} value")
+        _validate_tsv_slot(duration, f"{label} duration")
+        _validate_tsv_slot(offset, f"{label} offset")
+        return
+
+    if event in PEDAL_EVENTS:
+        _validate_tsv_slot(value, f"{label} value")
+        _validate_tsv_slot(duration, f"{label} duration")
+        _validate_tsv_slot(offset, f"{label} offset")
+        return
+
+    _validate_tsv_slot(value, f"{label} value")
+    _validate_tsv_slot(duration, f"{label} duration")
+    _validate_tsv_slot(offset, f"{label} offset")
 
 
 def _require_range(value: int, low: int, high: int, label: str) -> None:

@@ -443,7 +443,7 @@ Piano range: A0 (MIDI 21) to C8 (MIDI 108)
 3. ✅ **Efficient**: Much fewer tokens than text serialization
 4. ✅ **Parseable**: Easy validation and constrained decoding
 5. ✅ **Extensible**: Extension events handle large values
-6. ✅ **Vocabulary-friendly**: Small vocabulary expansion (performance-only: 524 tokens; full annotated-score: 796 tokens)
+6. ✅ **Vocabulary-friendly**: Small vocabulary expansion (performance-only: 524 tokens; full annotated-score: 797 tokens)
 
 ## Conversion Tools
 
@@ -937,18 +937,19 @@ Performance-only LM-MIDI vocabulary:
   - Structural / control: 12
 
 Full LM-MIDI vocabulary (performance + annotated score):
-- 796 added tokens
+- 797 added tokens
   - Performance-only core: 524
   - Lower-staff notes: 128 (<L000>-<L127>)
   - Annotated-score event types: 17
-  - Annotated-score subtype tokens: 127
+  - Annotated-score subtype tokens: 128
 ```
 
 Notes:
 - The earlier `~803` figure was approximate and did not match the exact token set
   implemented in the repository.
-- The exact full-vocabulary count is lower because several subtype labels are
-  shared across categories, e.g. `<dim>`, `<cre>`, and `<trill>`.
+- The exact full-vocabulary count is lower than the earlier approximate figure
+  because several subtype labels are shared across categories, e.g. `<dim>`,
+  `<cre>`, and `<trill>`.
 
 ## Design Rationale
 

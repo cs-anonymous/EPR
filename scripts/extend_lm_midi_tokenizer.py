@@ -21,7 +21,7 @@ def main() -> None:
         "--mode",
         choices=["performance", "full"],
         default="full",
-        help="LM-MIDI vocabulary mode. 'full' adds the exact 796-token vocabulary.",
+        help="LM-MIDI vocabulary mode. 'full' adds the exact 797-token vocabulary.",
     )
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()

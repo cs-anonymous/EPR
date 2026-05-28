@@ -206,11 +206,23 @@ def build_aligned_measure_content(
 ) -> dict[int, str]:
     """Project expanded raw ABCX measure content into aligned `StaffU ; StaffL` rows."""
     lines = read_abcx_lines(score_abcx)
-    layout = parse_score_layout(lines)
-    return {
-        measure_num: simplify_measure_content(content, layout)
-        for measure_num, content in midi_measure_content.items()
-    }
+    if any(line.lstrip().startswith("%%score") for line in lines):
+        layout = parse_score_layout(lines)
+        return {
+            measure_num: simplify_measure_content(content, layout)
+            for measure_num, content in midi_measure_content.items()
+        }
+
+    aligned_rows = [line.strip() for line in lines if line.strip().startswith("<M><V")]
+    if aligned_rows:
+        measure_nums = sorted(midi_measure_content)
+        result: dict[int, str] = {}
+        for measure_num, row in zip(measure_nums, aligned_rows):
+            content = re.sub(r"^<M><V\d{3}>", "", row).strip()
+            result[measure_num] = content or ". ; ."
+        return result
+
+    raise AlignedAbcxError(f"cannot derive aligned staff layout from {score_abcx}")
 
 
 def _parse_unit_length(lines: list[str]) -> Fraction:
@@ -691,7 +703,7 @@ def build_measure_note_staffs_from_aligned_abcx(
     score_midi = pretty_midi.PrettyMIDI(str(score_midi_path))
     score_notes = sorted(
         [note for inst in score_midi.instruments if not inst.is_drum for note in inst.notes],
-        key=lambda note: (note.start, note.pitch, note.end, note.velocity),
+        key=lambda note: (note.start, note.pitch, note.end),
     )
 
     result: dict[int, list[str | None]] = {}
@@ -746,6 +758,83 @@ def build_measure_note_staffs_from_aligned_abcx(
             )
 
         result[measure.measure_num] = assignments
+
+    return result
+
+
+def flatten_measure_note_staffs(
+    score_structure: ScoreStructure,
+    measure_note_staffs: dict[int, list[str | None]],
+) -> list[str | None]:
+    """Flatten per-measure staff labels into score-note index order."""
+    score_note_staffs: list[str | None] = [None] * (
+        score_structure.measures[-1].end_note_idx if score_structure.measures else 0
+    )
+    for measure in score_structure.measures:
+        note_count = max(0, measure.end_note_idx - measure.start_note_idx)
+        staffs = list(measure_note_staffs.get(measure.measure_num, []))
+        if len(staffs) < note_count:
+            staffs.extend([None] * (note_count - len(staffs)))
+        for offset in range(note_count):
+            score_note_staffs[measure.start_note_idx + offset] = staffs[offset]
+    return score_note_staffs
+
+
+def build_performance_measure_note_staffs(
+    score_midi_path: Path,
+    perf_midi_path: Path,
+    align_file: Path,
+    score_structure: ScoreStructure,
+    score_abcx: Path,
+    perf_entries: list[tuple[int | None, str, int, int]],
+) -> dict[int, list[str | None]]:
+    """Project score-side upper/lower staff labels onto aligned performance notes."""
+    score_measure_note_staffs = build_measure_note_staffs_from_aligned_abcx(
+        score_midi_path,
+        score_structure,
+        score_abcx,
+    )
+    score_note_staffs = flatten_measure_note_staffs(score_structure, score_measure_note_staffs)
+
+    perf_midi = pretty_midi.PrettyMIDI(str(perf_midi_path))
+    perf_notes = sorted(
+        [n for inst in perf_midi.instruments if not inst.is_drum for n in inst.notes],
+        key=lambda n: (n.start, n.pitch, n.end),
+    )
+
+    perf_note_staffs: list[str | None] = [None] * len(perf_notes)
+    data = np.load(align_file, allow_pickle=True)
+    perf_idx = data["perf_idx"]
+
+    limit = min(len(score_note_staffs), len(perf_idx))
+    for score_idx in range(limit):
+        perf_idx_value = int(perf_idx[score_idx])
+        if not (0 <= perf_idx_value < len(perf_note_staffs)):
+            continue
+        score_staff = score_note_staffs[score_idx]
+        existing = perf_note_staffs[perf_idx_value]
+        if existing is None:
+            perf_note_staffs[perf_idx_value] = score_staff
+        elif existing != score_staff and score_staff == "lower":
+            # Prefer keeping a lower-staff assignment on ambiguous many-to-one matches.
+            perf_note_staffs[perf_idx_value] = "lower"
+
+    result: dict[int, list[str | None]] = {}
+    note_idx = 0
+    for mnum_or_none, _phrase_id, start_tick, end_tick in perf_entries:
+        if mnum_or_none is None:
+            continue
+        measure_staffs: list[str | None] = []
+        while note_idx < len(perf_notes):
+            note_tick = round(perf_notes[note_idx].start * 100)
+            if note_tick < start_tick:
+                note_idx += 1
+                continue
+            if note_tick >= end_tick:
+                break
+            measure_staffs.append(perf_note_staffs[note_idx])
+            note_idx += 1
+        result[mnum_or_none] = measure_staffs
 
     return result
 
@@ -1143,6 +1232,146 @@ def build_midi_measure_content(
     return content
 
 
+def _group_score_notes_by_onset(
+    score_midi_path: Path,
+    onset_epsilon: float = 1e-6,
+) -> tuple[list[pretty_midi.Note], list[dict[str, float | int]]]:
+    """Return score notes and contiguous note-index groups sharing an onset."""
+    score_midi = pretty_midi.PrettyMIDI(str(score_midi_path))
+    score_notes = sorted(
+        [n for inst in score_midi.instruments if not inst.is_drum for n in inst.notes],
+        key=lambda n: (n.start, n.pitch, n.end),
+    )
+    groups: list[dict[str, float | int]] = []
+    group_start = 0
+    while group_start < len(score_notes):
+        onset = score_notes[group_start].start
+        group_end = group_start + 1
+        note_end = score_notes[group_start].end
+        while (
+            group_end < len(score_notes)
+            and abs(score_notes[group_end].start - onset) <= onset_epsilon
+        ):
+            note_end = max(note_end, score_notes[group_end].end)
+            group_end += 1
+        groups.append(
+            {
+                "start_idx": group_start,
+                "end_idx": group_end,
+                "start_time": onset,
+                "end_time": note_end,
+            }
+        )
+        group_start = group_end
+    return score_notes, groups
+
+
+def _abcx_onset_group_count(
+    aligned_content: str,
+    unit_length: Fraction,
+    key_signature: str,
+) -> int:
+    """Count note-bearing onset groups in one simplified aligned ABCX measure."""
+    groups = _parse_aligned_measure_events(aligned_content, unit_length, key_signature)
+    return sum(1 for group in groups if group["all"])
+
+
+def refine_score_measures_from_abcx_onsets(
+    score_midi_path: Path,
+    score_abcx: Path,
+    score_measures: list[ScoreMeasure],
+    midi_measure_content: dict[int, str],
+) -> list[ScoreMeasure]:
+    """Refine score-MIDI measure note ranges using ABCX onset-group counts.
+
+    Some score MIDI files contain no bar markers and have measures whose note
+    material is shifted by cross-voice rests or ties.  A pure time-signature
+    grid then splits a musical measure in the middle.  The simplified ABCX
+    layout gives a more stable per-measure onset count, so use it to place note
+    ranges and let each measure duration grow to contain the assigned notes.
+    """
+    if not score_measures or not midi_measure_content:
+        return score_measures
+
+    try:
+        lines = read_abcx_lines(score_abcx)
+        unit_length = _parse_unit_length(lines)
+        key_signature = _parse_key_signature(lines)
+        aligned_content = build_aligned_measure_content(score_abcx, midi_measure_content)
+        expected_group_counts = {
+            measure.measure_num: _abcx_onset_group_count(
+                aligned_content.get(measure.measure_num, ""),
+                unit_length,
+                key_signature,
+            )
+            for measure in score_measures
+        }
+    except Exception:
+        return score_measures
+
+    total_expected = sum(expected_group_counts.values())
+    if total_expected <= 0:
+        return score_measures
+
+    score_notes, onset_groups = _group_score_notes_by_onset(score_midi_path)
+    nominal_durations = [
+        max(0.0, measure.end_time - measure.start_time)
+        for measure in score_measures
+    ]
+
+    refined: list[ScoreMeasure] = []
+    group_cursor = 0
+    current_start_time = score_measures[0].start_time
+    changed = False
+
+    for index, measure in enumerate(score_measures):
+        group_count = expected_group_counts.get(measure.measure_num, 0)
+        nominal_duration = nominal_durations[index] if index < len(nominal_durations) else 0.0
+        if group_count <= 0 or group_cursor + group_count > len(onset_groups):
+            start_idx = measure.start_note_idx
+            end_idx = measure.end_note_idx
+            note_end_time = measure.end_time
+        else:
+            first_group = onset_groups[group_cursor]
+            last_group = onset_groups[group_cursor + group_count - 1]
+            start_idx = int(first_group["start_idx"])
+            end_idx = int(last_group["end_idx"])
+            group_starts = [
+                float(onset_groups[group_cursor + offset]["start_time"])
+                for offset in range(group_count)
+            ]
+            onset_steps = [
+                b - a
+                for a, b in zip(group_starts, group_starts[1:])
+                if b > a
+            ]
+            if onset_steps:
+                onset_steps.sort()
+                final_step = onset_steps[len(onset_steps) // 2]
+            else:
+                final_step = nominal_duration
+            note_end_time = group_starts[-1] + final_step
+            group_cursor += group_count
+
+        end_time = max(current_start_time + nominal_duration, note_end_time)
+        if start_idx != measure.start_note_idx or end_idx != measure.end_note_idx:
+            changed = True
+
+        refined.append(
+            ScoreMeasure(
+                measure_num=measure.measure_num,
+                start_note_idx=start_idx,
+                end_note_idx=end_idx,
+                start_time=current_start_time,
+                end_time=end_time,
+                time_signature=measure.time_signature,
+            )
+        )
+        current_start_time = end_time
+
+    return refined if changed else score_measures
+
+
 def build_midi_phrases(
     score_measures: list[ScoreMeasure],
     midi_to_abcx: dict[int, int],
@@ -1476,6 +1705,7 @@ def generate_performance_tsv_with_phrases(
                 "dur": note.end - note.start,
                 "vel": note.velocity,
             })
+    all_notes.sort(key=lambda note: (note["start"], note["pitch"], note["end"], note["vel"]))
 
     all_pedals = []
     for inst in perf_midi.instruments:
@@ -1527,6 +1757,9 @@ def generate_performance_tsv_with_phrases(
     phrase_index = -1
     measure_global_index = -1
     last_note_tick: int | None = None
+    note_cursor = 0
+    quantized_pedals.sort(key=lambda pedal: int(pedal["t"]))
+    pedal_cursor = 0
 
     for mnum_or_none, phrase_id, start_tick, end_tick in perf_entries:
         if mnum_or_none is None:
@@ -1536,17 +1769,31 @@ def generate_performance_tsv_with_phrases(
 
         # Find notes in this measure
         events = []
-        for n in all_notes:
+        while note_cursor < len(all_notes) and round(all_notes[note_cursor]["start"] * 100) < start_tick:
+            note_cursor += 1
+        note_scan = note_cursor
+        while note_scan < len(all_notes):
+            n = all_notes[note_scan]
             abs_start_tick = round(n["start"] * 100)
-            if start_tick <= abs_start_tick < end_tick:
-                dur_tick = round(n["dur"] * 100)
-                events.append((abs_start_tick, 0, n["pitch"], dur_tick, n["vel"], n.get("staff")))
+            if abs_start_tick >= end_tick:
+                break
+            dur_tick = round(n["dur"] * 100)
+            events.append((abs_start_tick, 0, n["pitch"], dur_tick, n["vel"], n.get("staff")))
+            note_scan += 1
+        note_cursor = note_scan
 
         # Find quantized pedals in this measure
-        for p in quantized_pedals:
+        while pedal_cursor < len(quantized_pedals) and int(quantized_pedals[pedal_cursor]["t"]) < start_tick:
+            pedal_cursor += 1
+        pedal_scan = pedal_cursor
+        while pedal_scan < len(quantized_pedals):
+            p = quantized_pedals[pedal_scan]
             p_tick = int(p["t"])
-            if start_tick <= p_tick < end_tick:
-                events.append((p_tick, 1, None, 0, p["val"], None))
+            if p_tick >= end_tick:
+                break
+            events.append((p_tick, 1, None, 0, p["val"], None))
+            pedal_scan += 1
+        pedal_cursor = pedal_scan
 
         # Structural rows do not affect note-offset reference.
         measure_global_index += 1
@@ -1656,28 +1903,28 @@ def generate_score_tsv_with_phrases(
     )
 
 
-def _build_score_structure(
+def build_score_structure_from_paths(
     score_midi: Path,
     score_abcx: Path,
-    piece_dir: Path,
     midi_tsv,
-) -> tuple[ScoreStructure, bool]:
-    """Build ScoreStructure from a Score MIDI file. Returns (structure, success)."""
+    mapping_source: Path | None = None,
+) -> ScoreStructure | None:
+    """Build ScoreStructure from explicit score MIDI and ABCX paths."""
     score_measures = extract_score_measures(score_midi, midi_tsv)
     if not score_measures:
-        return None, False
+        return None
 
     _, abcx_measures = parse_abcx_structure(score_abcx, score_measures)
-
-    # For content-based matching, prefer the raw full Score MIDI
-    # to get pitch data for all measures including repeats
-    raw_score_midi = piece_dir.parent.parent / piece_dir.relative_to(piece_dir.parent.parent) / "score_PDMX.mid"
-    if not raw_score_midi.exists():
-        raw_score_midi = None
-    mapping_source = raw_score_midi or score_midi
-    midi_to_abcx = build_midi_to_abcx_mapping(score_measures, abcx_measures, mapping_source)
+    mapping_base = mapping_source if mapping_source is not None and mapping_source.exists() else score_midi
+    midi_to_abcx = build_midi_to_abcx_mapping(score_measures, abcx_measures, mapping_base)
 
     midi_measure_content = build_midi_measure_content(score_measures, abcx_measures, midi_to_abcx)
+    score_measures = refine_score_measures_from_abcx_onsets(
+        score_midi,
+        score_abcx,
+        score_measures,
+        midi_measure_content,
+    )
     midi_phrases = build_midi_phrases(score_measures, midi_to_abcx, midi_measure_content, score_abcx)
 
     measure_to_phrase = {}
@@ -1685,7 +1932,7 @@ def _build_score_structure(
         for measure_num in phrase.measures:
             measure_to_phrase[measure_num] = phrase.phrase_id
 
-    score_structure = ScoreStructure(
+    return ScoreStructure(
         measures=score_measures,
         phrases=midi_phrases,
         measure_to_phrase=measure_to_phrase,
@@ -1693,7 +1940,27 @@ def _build_score_structure(
         midi_to_abcx=midi_to_abcx,
         midi_measure_content=midi_measure_content,
     )
-    return score_structure, True
+
+
+def _build_score_structure(
+    score_midi: Path,
+    score_abcx: Path,
+    piece_dir: Path,
+    midi_tsv,
+) -> tuple[ScoreStructure, bool]:
+    """Build ScoreStructure from a Score MIDI file. Returns (structure, success)."""
+    # For content-based matching, prefer the raw full Score MIDI
+    # to get pitch data for all measures including repeats
+    raw_score_midi = piece_dir.parent.parent / piece_dir.relative_to(piece_dir.parent.parent) / "score_PDMX.mid"
+    if not raw_score_midi.exists():
+        raw_score_midi = None
+    score_structure = build_score_structure_from_paths(
+        score_midi,
+        score_abcx,
+        midi_tsv,
+        mapping_source=raw_score_midi,
+    )
+    return score_structure, score_structure is not None
 
 
 def _process_score_midi(
@@ -1769,11 +2036,20 @@ def _process_score_midi(
             tsv_name = perf_midi_name + ".tsv"
 
         output_tsv = output_piece_dir / tsv_name
+        perf_measure_note_staffs = build_performance_measure_note_staffs(
+            score_midi,
+            perf_midi,
+            align_file,
+            struct,
+            score_abcx,
+            perf_measures,
+        )
         if generate_performance_tsv_with_phrases(
             perf_midi,
             perf_measures,
             output_tsv,
             midi_tsv,
+            measure_note_staffs=perf_measure_note_staffs,
         ):
             success_count += 1
 
@@ -1892,6 +2168,12 @@ def process_metadata_task_legacy(
     midi_to_abcx = build_midi_to_abcx_mapping(score_measures, abcx_measures, mapping_source)
 
     midi_measure_content = build_midi_measure_content(score_measures, abcx_measures, midi_to_abcx)
+    score_measures = refine_score_measures_from_abcx_onsets(
+        score_midi,
+        abcx_path,
+        score_measures,
+        midi_measure_content,
+    )
     midi_phrases = build_midi_phrases(score_measures, midi_to_abcx, midi_measure_content, abcx_path)
 
     measure_to_phrase = {}
@@ -1925,9 +2207,9 @@ def process_metadata_task_legacy(
                 "midi_measure_content": {str(k): v for k, v in sorted(score_structure.midi_measure_content.items())},
             }, f, indent=2, ensure_ascii=False)
 
+    aligned_abcx = output_piece_dir / f"score_aligned{suffix}.abcx"
     # Write score_aligned.abcx. Scores that cannot be projected to the two-staff
     # aligned format are removed/skipped by write_aligned_abcx.
-    aligned_abcx = output_piece_dir / f"score_aligned{suffix}.abcx"
     write_aligned_abcx(abcx_path, aligned_abcx, score_structure.phrases, score_structure.midi_measure_content)
 
     # Copy original score.abcx (write once)
@@ -1950,11 +2232,20 @@ def process_metadata_task_legacy(
         tsv_name = Path(perf_midi_rel).name + ".tsv"
         output_tsv = output_piece_dir / tsv_name
 
+        perf_measure_note_staffs = build_performance_measure_note_staffs(
+            score_midi,
+            perf_midi,
+            align_file,
+            score_structure,
+            aligned_abcx if aligned_abcx.exists() else abcx_path,
+            perf_measures,
+        )
         if generate_performance_tsv_with_phrases(
             perf_midi,
             perf_measures,
             output_tsv,
             midi_tsv,
+            measure_note_staffs=perf_measure_note_staffs,
         ):
             success_count += 1
 
@@ -2000,38 +2291,20 @@ def process_metadata_task(
     if not score_midi.exists() or not abcx_path.exists():
         return 0
 
-    # Build score structure
-    score_measures = extract_score_measures(score_midi, midi_tsv)
-    if not score_measures:
-        return 0
-
-    _, abcx_measures = parse_abcx_structure(abcx_path, score_measures)
-
     # Use raw score MIDI for content matching fallback
     raw_score_path = task['score_path'].replace('_refined.mid', '.mid')
     if '_refined' in raw_score_path or '_mini' in raw_score_path:
         raw_score_midi = pianocore_root / 'refined' / raw_score_path
     else:
         raw_score_midi = pianocore_root / 'raw' / raw_score_path
-    mapping_source = raw_score_midi if raw_score_midi.exists() else score_midi
-    midi_to_abcx = build_midi_to_abcx_mapping(score_measures, abcx_measures, mapping_source)
-
-    midi_measure_content = build_midi_measure_content(score_measures, abcx_measures, midi_to_abcx)
-    midi_phrases = build_midi_phrases(score_measures, midi_to_abcx, midi_measure_content, abcx_path)
-
-    measure_to_phrase = {}
-    for phrase in midi_phrases:
-        for measure_num in phrase.measures:
-            measure_to_phrase[measure_num] = phrase.phrase_id
-
-    score_structure = ScoreStructure(
-        measures=score_measures,
-        phrases=midi_phrases,
-        measure_to_phrase=measure_to_phrase,
-        abcx_measures=abcx_measures,
-        midi_to_abcx=midi_to_abcx,
-        midi_measure_content=midi_measure_content,
+    score_structure = build_score_structure_from_paths(
+        score_midi,
+        abcx_path,
+        midi_tsv,
+        mapping_source=raw_score_midi if raw_score_midi.exists() else score_midi,
     )
+    if score_structure is None:
+        return 0
 
     # Output directory
     output_piece_dir = output_dir / piece_rel
@@ -2087,11 +2360,20 @@ def process_metadata_task(
             success_count += 1
             continue
 
+        perf_measure_note_staffs = build_performance_measure_note_staffs(
+            score_midi,
+            perf_midi,
+            align_file,
+            score_structure,
+            aligned_abcx if aligned_abcx.exists() else abcx_path,
+            perf_measures,
+        )
         if generate_performance_tsv_with_phrases(
             perf_midi,
             perf_measures,
             output_tsv,
             midi_tsv,
+            measure_note_staffs=perf_measure_note_staffs,
         ):
             success_count += 1
 

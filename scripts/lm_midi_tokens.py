@@ -214,7 +214,7 @@ def lm_midi_vocabulary(mode: str = "full") -> list[str]:
 
     Modes:
     - ``performance``: legacy performance-only vocabulary (524 tokens)
-    - ``full``: performance + annotated-score vocabulary (796 tokens)
+    - ``full``: performance + annotated-score vocabulary (797 tokens)
     """
     if mode == "performance":
         return lm_midi_performance_vocabulary()

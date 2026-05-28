@@ -9,7 +9,7 @@ wave-roll
 output
 .venv
 PianoCoRe*
-Qwen3.5-4B*
+Qwen3.5*
 sft_data
 *.log
 PianistTransformer

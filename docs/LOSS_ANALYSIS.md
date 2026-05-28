@@ -26,7 +26,7 @@
 ```
 原始词表：248,077 tokens
 旧版扩展词表：248,601 tokens（新增 524 个 performance-only LM-MIDI tokens）
-当前 full LM-MIDI 词表：248,873 tokens（新增 796 个 LM-MIDI tokens）
+当前 full LM-MIDI 词表：248,874 tokens（新增 797 个 LM-MIDI tokens）
 ```
 
 **影响：**

@@ -176,6 +176,15 @@ class Annotation:
 
 
 @dataclass
+class LayerAnnotationState:
+    """Track cross-measure state for one ABCX layer."""
+    pending_slur_starts: int = 0
+    active_slurs: int = 0
+    last_note_measure_num: int | None = None
+    last_note_onset: Fraction | None = None
+
+
+@dataclass
 class ABCXHeader:
     """ABCX header information."""
     titles: list[str]
@@ -243,7 +252,9 @@ class ABCXAnnotationParser:
         Strategy: Parse measure-by-measure, extract annotations at measure level.
         For simplicity, we place all annotations at the start of their measure.
         """
-        annotations = []
+        timed_annotations_by_measure: dict[int, list[tuple[Fraction, str, str, str | None, tuple[int, ...] | None]]] = defaultdict(list)
+        onsets_by_measure: dict[int, list[Fraction]] = {}
+        layer_states: dict[tuple[str, int], LayerAnnotationState] = defaultdict(LayerAnnotationState)
 
         # Parse ABCX measures using existing logic
         abcx_measures = asp._parse_abcx_measures(self.abcx_path)
@@ -254,19 +265,68 @@ class ABCXAnnotationParser:
             if self.score_layout is not None:
                 content = asp.simplify_measure_content(content, self.score_layout)
 
-            # Extract annotations from this measure
-            measure_annotations = self._extract_from_measure(content, measure_num)
-            annotations.extend(measure_annotations)
+            # Extract annotations from this measure while preserving cross-measure span state.
+            onsets_by_measure[measure_num] = self._extract_from_measure(
+                content,
+                measure_num,
+                layer_states,
+                timed_annotations_by_measure,
+            )
 
+        annotations: list[Annotation] = []
+        for measure_num, timed_annotations in timed_annotations_by_measure.items():
+            all_onsets = onsets_by_measure.get(measure_num, [])
+            if not all_onsets:
+                continue
+            for onset_time, ann_type, ann_value, ann_staff, pitch_anchor in timed_annotations:
+                effective_staff = ann_staff
+                if ann_staff == "upper_aux":
+                    effective_staff = "upper"
+
+                position = len(all_onsets) - 1
+                for idx, onset in enumerate(all_onsets):
+                    if onset >= onset_time:
+                        position = idx
+                        break
+
+                annotations.append(
+                    Annotation(
+                        measure_num=measure_num,
+                        position=position,
+                        type=ann_type,
+                        value=ann_value,
+                        staff=effective_staff,
+                        pitch_anchor=pitch_anchor,
+                    )
+                )
         return annotations
 
-    def _extract_from_measure(self, content: str, measure_num: int) -> list[Annotation]:
-        """Extract annotations from a single measure's content."""
+    def _append_timed_annotation(
+        self,
+        timed_annotations_by_measure: dict[int, list[tuple[Fraction, str, str, str | None, tuple[int, ...] | None]]],
+        measure_num: int,
+        onset_time: Fraction,
+        ann_type: str,
+        ann_value: str,
+        ann_staff: str | None,
+        pitch_anchor: tuple[int, ...] | None = None,
+    ) -> None:
+        timed_annotations_by_measure[measure_num].append(
+            (onset_time, ann_type, ann_value, ann_staff, pitch_anchor)
+        )
+
+    def _extract_from_measure(
+        self,
+        content: str,
+        measure_num: int,
+        layer_states: dict[tuple[str, int], LayerAnnotationState],
+        timed_annotations_by_measure: dict[int, list[tuple[Fraction, str, str, str | None, tuple[int, ...] | None]]],
+    ) -> list[Fraction]:
+        """Extract timed annotations and onsets from a single measure."""
         staff_parts = asp._split_top_level(content, ";")
         if len(staff_parts) < 2:
             staff_parts += ["."] * (2 - len(staff_parts))
 
-        timed_annotations: list[tuple[Fraction, str, str, str | None, tuple[int, ...] | None]] = []
         onset_sources: dict[str, set[Fraction]] = {
             "upper_main": set(),
             "upper_aux": set(),
@@ -284,55 +344,75 @@ class ABCXAnnotationParser:
                     source_name = "upper_main" if layer_idx == 0 else "upper_aux"
                 for onset, _pitches in asp._parse_staff_layer_events(layer_text, self.unit_length, self.key_signature):
                     onset_sources[source_name].add(onset)
-                timed_annotations.extend(
-                    self._extract_timed_annotations_from_layer(layer_text, staff, layer_idx)
+                self._extract_timed_annotations_from_layer(
+                    layer_text,
+                    staff,
+                    layer_idx,
+                    measure_num,
+                    layer_states[(staff, layer_idx)],
+                    timed_annotations_by_measure,
                 )
 
-        all_onsets = sorted(set().union(*onset_sources.values()))
-        annotations: list[Annotation] = []
-        for onset_time, ann_type, ann_value, ann_staff, pitch_anchor in timed_annotations:
-            effective_staff = ann_staff
-            if ann_staff == "upper_aux":
-                effective_staff = "upper"
-
-            position = 0
-            if all_onsets:
-                position = len(all_onsets) - 1
-                for idx, onset in enumerate(all_onsets):
-                    if onset >= onset_time:
-                        position = idx
-                        break
-
-            annotations.append(
-                Annotation(
-                    measure_num=measure_num,
-                    position=position,
-                    type=ann_type,
-                    value=ann_value,
-                    staff=effective_staff,
-                    pitch_anchor=pitch_anchor,
-                )
-            )
-
-        return annotations
+        return sorted(set().union(*onset_sources.values()))
 
     def _extract_timed_annotations_from_layer(
         self,
         layer_text: str,
         staff: str,
         layer_idx: int,
-    ) -> list[tuple[Fraction, str, str, str | None, tuple[int, ...] | None]]:
+        measure_num: int,
+        layer_state: LayerAnnotationState,
+        timed_annotations_by_measure: dict[int, list[tuple[Fraction, str, str, str | None, tuple[int, ...] | None]]],
+    ) -> None:
         """Extract timed annotations from one layer.
 
         Timings are tracked in ABC measure-time units so annotations can later
         be attached to the first note onset at or after their textual position.
         """
         layer_staff = "upper_aux" if staff == "upper" and layer_idx > 0 else staff
-        annotations: list[tuple[Fraction, str, str, str | None, tuple[int, ...] | None]] = []
         cursor = Fraction(0, 1)
         tuplet_remaining = 0
         tuplet_factor = Fraction(1, 1)
         index = 0
+
+        def emit_current(ann_type: str, ann_value: str, pitch_anchor: tuple[int, ...] | None = None) -> None:
+            self._append_timed_annotation(
+                timed_annotations_by_measure,
+                measure_num,
+                cursor,
+                ann_type,
+                ann_value,
+                layer_staff,
+                pitch_anchor,
+            )
+
+        def emit_slur_start_here() -> None:
+            if layer_state.pending_slur_starts <= 0:
+                return
+            for _ in range(layer_state.pending_slur_starts):
+                emit_current("range_start", "slur")
+            layer_state.active_slurs += layer_state.pending_slur_starts
+            layer_state.pending_slur_starts = 0
+
+        def remember_note_onset() -> None:
+            layer_state.last_note_measure_num = measure_num
+            layer_state.last_note_onset = cursor
+
+        def emit_slur_end() -> None:
+            if layer_state.active_slurs > 0 and layer_state.last_note_measure_num is not None and layer_state.last_note_onset is not None:
+                self._append_timed_annotation(
+                    timed_annotations_by_measure,
+                    layer_state.last_note_measure_num,
+                    layer_state.last_note_onset,
+                    "range_end",
+                    "slur",
+                    layer_staff,
+                    None,
+                )
+                layer_state.active_slurs -= 1
+                return
+            if layer_state.pending_slur_starts > 0:
+                layer_state.pending_slur_starts -= 1
 
         while index < len(layer_text):
             char = layer_text[index]
@@ -346,9 +426,16 @@ class ABCXAnnotationParser:
                 expr_text = layer_text[index + 1:end].strip()
                 expr_normalized = expr_text.lower().replace('^', '').replace('_', '').replace('.', '').strip()
                 if expr_text in PEDAL_MAP:
-                    annotations.append((cursor, "pedal", PEDAL_MAP[expr_text], None, None))
+                    self._append_timed_annotation(
+                        timed_annotations_by_measure,
+                        measure_num,
+                        cursor,
+                        "pedal",
+                        PEDAL_MAP[expr_text],
+                        None,
+                    )
                 elif expr_normalized in EXPRESSION_MAP:
-                    annotations.append((cursor, "expression", EXPRESSION_MAP[expr_normalized], layer_staff, None))
+                    emit_current("expression", EXPRESSION_MAP[expr_normalized])
                 index = min(end + 1, len(layer_text))
                 continue
             if char == "!":
@@ -357,9 +444,9 @@ class ABCXAnnotationParser:
                     end += 1
                 marker = layer_text[index:min(end + 1, len(layer_text))]
                 if marker in DYNAMIC_MAP:
-                    annotations.append((cursor, "dynamic", DYNAMIC_MAP[marker], layer_staff, None))
+                    emit_current("dynamic", DYNAMIC_MAP[marker])
                 elif marker in ARTICULATION_MAP:
-                    annotations.append((cursor, "articulation", ARTICULATION_MAP[marker], layer_staff, None))
+                    emit_current("articulation", ARTICULATION_MAP[marker])
                 elif marker in ORNAMENT_MAP:
                     pitch_anchor = None
                     if ORNAMENT_MAP[marker] == "arpeggio":
@@ -367,13 +454,13 @@ class ABCXAnnotationParser:
                             layer_text,
                             min(end + 1, len(layer_text)),
                         )
-                    annotations.append((cursor, "ornament", ORNAMENT_MAP[marker], layer_staff, pitch_anchor))
+                    emit_current("ornament", ORNAMENT_MAP[marker], pitch_anchor)
                 elif marker in RANGE_START_MAP:
-                    annotations.append((cursor, "range_start", RANGE_START_MAP[marker], layer_staff, None))
+                    emit_current("range_start", RANGE_START_MAP[marker])
                 elif marker in RANGE_END_MAP:
-                    annotations.append((cursor, "range_end", RANGE_END_MAP[marker], layer_staff, None))
+                    emit_current("range_end", RANGE_END_MAP[marker])
                 elif marker == "!fermata!":
-                    annotations.append((cursor, "fermata", "fermata", layer_staff, None))
+                    emit_current("fermata", "fermata")
                 index = min(end + 1, len(layer_text))
                 continue
             if char == "{":
@@ -402,9 +489,11 @@ class ABCXAnnotationParser:
                     tuplet_remaining = notes_affected
                     index += len(match.group(0))
                     continue
+                layer_state.pending_slur_starts += 1
                 index += 1
                 continue
             if char == ")":
+                emit_slur_end()
                 index += 1
                 continue
             if char in "zx":
@@ -438,6 +527,8 @@ class ABCXAnnotationParser:
                 tie_out = end < len(layer_text) and layer_text[end] == "-"
                 if tie_out:
                     end += 1
+                emit_slur_start_here()
+                remember_note_onset()
                 duration = asp._abc_duration_from_suffix(
                     layer_text[duration_start:end - (1 if tie_out else 0)],
                     self.unit_length,
@@ -456,6 +547,8 @@ class ABCXAnnotationParser:
                 index += 1
                 continue
             atom, index = parsed
+            emit_slur_start_here()
+            remember_note_onset()
             duration = asp._abc_duration_from_suffix(str(atom["duration"]), self.unit_length)
             if tuplet_remaining:
                 duration *= tuplet_factor
@@ -463,8 +556,7 @@ class ABCXAnnotationParser:
             if tuplet_remaining == 0:
                 tuplet_factor = Fraction(1, 1)
             cursor += duration
-
-        return annotations
+        return None
 
     def _next_chord_pitch_anchor(self, layer_text: str, index: int) -> tuple[int, ...] | None:
         """Return the next chord/note pitch tuple after an annotation marker."""
@@ -1096,7 +1188,9 @@ def process_score(task: dict[str, str]) -> dict[str, Any]:
             else:
                 return {"ok": False, "error": "Failed to generate MIDI and annotation-only TSV", "path": str(score_abcx_path)}
 
-    # Generate or load score MIDI TSV
+    # Generate or load score MIDI TSV. If the provided score MIDI is corrupt,
+    # fall back to an abc2midi-rendered temporary MIDI so annotation coverage
+    # is not blocked by broken source MIDI files.
     tsv_path = generate_score_midi_tsv_if_needed(
         score_midi_path,
         score_abcx_path,
@@ -1105,6 +1199,22 @@ def process_score(task: dict[str, str]) -> dict[str, Any]:
     )
 
     if not tsv_path:
+        generated_midi_filename = score_abcx_path.stem + ".fallback.generated.mid"
+        generated_midi_path = score_abcx_path.parent / generated_midi_filename
+        success = generate_midi_from_abcx(score_abcx_path, generated_midi_path)
+        if success:
+            score_midi_path = generated_midi_path
+            tsv_path = generate_score_midi_tsv_if_needed(
+                score_midi_path,
+                score_abcx_path,
+                score_abcx_path.parent,
+                _worker_midi_tsv,
+            )
+
+    if not tsv_path:
+        success = generate_annotation_only_tsv(header, annotations, output_path)
+        if success:
+            return {"ok": True, "output": str(output_path), "path": str(score_abcx_path), "type": "annotation_only_fallback"}
         return {"ok": False, "error": "Failed to generate/load TSV", "path": str(score_abcx_path)}
 
     # Build midi_to_abcx mapping
