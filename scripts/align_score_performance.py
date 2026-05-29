@@ -767,16 +767,17 @@ def flatten_measure_note_staffs(
     measure_note_staffs: dict[int, list[str | None]],
 ) -> list[str | None]:
     """Flatten per-measure staff labels into score-note index order."""
-    score_note_staffs: list[str | None] = [None] * (
-        score_structure.measures[-1].end_note_idx if score_structure.measures else 0
-    )
+    max_note_idx = max(m.end_note_idx for m in score_structure.measures)
+    score_note_staffs: list[str | None] = [None] * max_note_idx
     for measure in score_structure.measures:
         note_count = max(0, measure.end_note_idx - measure.start_note_idx)
         staffs = list(measure_note_staffs.get(measure.measure_num, []))
         if len(staffs) < note_count:
             staffs.extend([None] * (note_count - len(staffs)))
         for offset in range(note_count):
-            score_note_staffs[measure.start_note_idx + offset] = staffs[offset]
+            idx = measure.start_note_idx + offset
+            if 0 <= idx < max_note_idx:
+                score_note_staffs[idx] = staffs[offset]
     return score_note_staffs
 
 
@@ -2194,9 +2195,10 @@ def process_metadata_task_legacy(
     output_piece_dir = output_dir / piece_rel
     output_piece_dir.mkdir(parents=True, exist_ok=True)
 
-    # Write score_structure.json (write once, skip if exists)
+    # Write score_structure.json.  When TSVs are being overwritten, the score
+    # structure must be overwritten too because H/M generation can change.
     json_path = output_piece_dir / f"score_structure{suffix}.json"
-    if not json_path.exists():
+    if overwrite_tsv or not json_path.exists():
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump({
                 "measures": [asdict(m) for m in score_structure.measures],
@@ -2310,9 +2312,10 @@ def process_metadata_task(
     output_piece_dir = output_dir / piece_rel
     output_piece_dir.mkdir(parents=True, exist_ok=True)
 
-    # Write score_structure.json (write once, skip if exists)
+    # Write score_structure.json.  When TSVs are being overwritten, the score
+    # structure must be overwritten too because H/M generation can change.
     json_path = output_piece_dir / f"score_structure{suffix}.json"
-    if not json_path.exists():
+    if overwrite_tsv or not json_path.exists():
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump({
                 "measures": [asdict(m) for m in score_structure.measures],
