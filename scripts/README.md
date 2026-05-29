@@ -2,6 +2,8 @@
 
 清晰的数据生成流程脚本，一个步骤一个脚本。
 
+---
+
 ## 主流程脚本
 
 ```bash
@@ -17,6 +19,8 @@ python scripts/run_pipeline.py --jobs 32
 - `--skip-step3`: 跳过 Step 3
 - `--skip-step4-s`: 跳过 Step 4 (S-tier)
 - `--skip-step4-astar`: 跳过 Step 4 (A*-tier)
+
+---
 
 ## 独立步骤脚本
 
@@ -37,7 +41,7 @@ python scripts/01_build_score_abcx.py \
 
 ---
 
-### Step 2: 构建 H/M 结构
+### Step 2: 构建 H/M 结构 + 写入 aligned ABCX
 
 ```bash
 python scripts/02_build_hm_structure.py \
@@ -50,31 +54,31 @@ python scripts/02_build_hm_structure.py \
 - `data/miditsv/Composer/Piece/score.abcx`
 - `PianoCoRe/raw/Composer/Piece/score_*.mid`
 
-**输出**: `data/miditsv/Composer/Piece/score_structure.json`
+**输出**: 
+- `data/miditsv/Composer/Piece/score_structure.json`
+- `data/miditsv/Composer/Piece/score_aligned.abcx`
 
-从 score MIDI 提取小节网格，将 ABCX 内容映射到 MIDI 小节，分组为乐句（H）和小节（M）。
+从 score MIDI 提取小节网格，将 ABCX 内容映射到 MIDI 小节，分组为乐句（H）和小节（M），并写入带 H/M 标记的 aligned ABCX。
 
 ---
 
-### Step 3: 写入 score assets
+### Step 3: 写入 annotated score TSV
 
 ```bash
-python scripts/03_write_score_assets.py \
+python scripts/03_write_annotated_tsv.py \
   --metadata data/score_metadata.csv \
   --pianocore-root PianoCoRe \
   --jobs 32
 ```
 
 **输入**:
-- `data/miditsv/Composer/Piece/score.abcx`
 - `data/miditsv/Composer/Piece/score_structure.json`
 - `PianoCoRe/raw/Composer/Piece/score_*.mid`
+- `data/miditsv/Composer/Piece/score.abcx` (含注释)
 
-**输出**:
-- `data/miditsv/Composer/Piece/score_aligned.abcx` (带 H/M 标记)
-- `data/miditsv/Composer/Piece/score.annotated_score.mid.tsv` (带注释的 TSV)
+**输出**: `data/miditsv/Composer/Piece/score.annotated_score.mid.tsv`
 
-写入对齐的 ABCX 和带注释的乐谱 TSV。
+生成带 H/M 结构和注释的乐谱 TSV。
 
 ---
 
@@ -110,43 +114,50 @@ python scripts/process_astar_performances.py \
 
 ---
 
-## 脚本对应关系
+## 脚本结构
 
-| 步骤 | 新脚本 | 旧脚本（已废弃） |
-|------|--------|------------------|
-| Step 1 | `01_build_score_abcx.py` | `build_score_abcx.py` |
-| Step 2 | `02_build_hm_structure.py` | `rebuild_score_assets_from_metadata.py` (部分) |
-| Step 3 | `03_write_score_assets.py` | `rebuild_score_assets_from_metadata.py` (部分) + `build_annotated_score_tsv.py` |
-| Step 4 | `04_project_performance_tsv.py` | `build_pianocores_miditsv.py` |
-| 主流程 | `run_pipeline.py` | `regenerate_all_pipeline.py` |
-
----
-
-## 清理旧脚本
-
-等待当前数据生成完成后，运行清理脚本删除旧的冗余脚本：
-
-```bash
-python scripts/cleanup_old_scripts.py
 ```
-
-**警告**: 这会永久删除旧脚本，请确保新脚本工作正常后再执行。
+scripts/
+├── 01_build_score_abcx.py          # Step 1: XML/MXL → score.abcx
+├── 02_build_hm_structure.py        # Step 2: 构建 H/M + 写入 aligned ABCX
+├── 03_write_annotated_tsv.py       # Step 3: 写入 annotated score TSV
+├── 04_project_performance_tsv.py   # Step 4: 投影到 performance TSV
+├── run_pipeline.py                 # 主流程脚本
+└── cleanup_old_scripts.py          # 清理旧脚本工具
+```
 
 ---
 
 ## 数据流
 
 ```
-Step 1: XML/MXL → score.abcx
-Step 2: score.abcx + score MIDI → score_structure.json (H/M)
-Step 3: score_structure.json → score_aligned.abcx + score.annotated_score.mid.tsv
-Step 4: score_structure.json + performance MIDI + alignment → performance.mid.tsv
+Step 1: XML/MXL → score.abcx (σ)
+Step 2: σ + score MIDI → H/M 结构 + score_aligned.abcx (σ*)
+Step 3: H/M + score MIDI + σ → score.annotated_score.mid.tsv (ψ*)
+Step 4: H/M + performance MIDI + alignment → performance.mid.tsv (φ*)
 ```
+
+---
+
+## 清理旧脚本
+
+等待数据生成完成后，运行清理脚本删除旧的冗余脚本：
+
+```bash
+python scripts/cleanup_old_scripts.py
+```
+
+将删除以下旧脚本：
+- `build_score_abcx.py`
+- `rebuild_score_assets_from_metadata.py`
+- `build_annotated_score_tsv.py`
+- `build_pianocores_miditsv.py`
+- `regenerate_all_pipeline.py`
+- `copy_score_abcx_to_miditsv.py`
 
 ---
 
 ## 相关文档
 
 - **完整流程文档**: `docs/score_performance_alignment_pipeline.md`
-- **步骤总结**: `docs/pipeline_steps_summary.md`
 - **流程图**: `docs/score_performance_alignment_tikz.pdf`

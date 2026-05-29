@@ -1,93 +1,157 @@
 # Score-Performance Alignment Pipeline
 
-Complete pipeline for generating aligned score and performance data from raw MusicXML/MIDI files.
+完整的乐谱-演奏对齐数据生成流程文档。
 
-## Overview
+---
 
-This pipeline processes piano music scores and performances through multiple stages:
+## 目录
 
-1. **Raw Score Processing**: Convert MusicXML/MXL to ABCX format
-2. **Score Structure Alignment**: Build hierarchical measure/phrase structure
-3. **Score MIDI TSV Generation**: Generate tokenized score representations
-4. **Annotated Score TSV**: Add performance annotations (dynamics, articulation, etc.)
-5. **Performance TSV Generation**: Align and tokenize performance MIDI
+1. [概述](#概述)
+2. [数据流图](#数据流图)
+3. [步骤详解](#步骤详解)
+4. [脚本使用](#脚本使用)
+5. [符号说明](#符号说明)
+6. [输出文件结构](#输出文件结构)
 
-## Pipeline Stages
+---
 
-### Stage 1: Build Raw Score ABCX
+## 概述
 
-**Input**: `PianoCoRe/raw/Composer/Piece/score.mxl`  
-**Output**: `data/miditsv/Composer/Piece/score.abcx`  
-**Script**: `scripts/build_score_abcx.py`
+本流程将乐谱（XML/MXL）和演奏 MIDI 转换为带有层次结构（H/M）和注释的标记化 TSV 格式。
 
-Converts MusicXML/MXL files to ABCX (ABC notation extended) format directly to the final output directory.
+**核心步骤**：
+1. **Step 1**: XML/MXL → score.abcx
+2. **Step 2**: 构建 H/M 结构 + 写入 aligned ABCX
+3. **Step 3**: 写入 annotated score TSV
+4. **Step 4**: 投影到 performance TSV
 
+**输出数据**：
+- 1,600 个 score.abcx
+- 7,252 个 score_aligned.abcx + score_structure.json
+- 7,252 个 score.annotated_score.mid.tsv
+- 129,419 个 performance.mid.tsv
+
+---
+
+## 数据流图
+
+```
+┌─────────────┐
+│ XML/MXL (σ₀)│
+└──────┬──────┘
+       │ [Step 1]
+       │ 01_build_score_abcx.py
+       ↓
+┌─────────────────┐
+│ score.abcx (σ)  │
+└────────┬────────┘
+         │
+         │ + score MIDI (ψ)
+         │
+         │ [Step 2]
+         │ 02_build_hm_structure.py
+         ↓
+┌──────────────────────────────┐
+│ H/M 结构 + aligned ABCX (σ*) │
+│ • score_structure.json       │
+│ • score_aligned.abcx         │
+└──────────┬───────────────────┘
+           │
+           │ + score MIDI (ψ)
+           │ + annotations (σ)
+           │
+           │ [Step 3]
+           │ 03_write_annotated_tsv.py
+           ↓
+┌────────────────────────────────┐
+│ annotated score TSV (ψ*)       │
+│ score.annotated_score.mid.tsv  │
+└────────────────────────────────┘
+
+┌──────────────────────┐
+│ performance MIDI (φ) │
+└──────────┬───────────┘
+           │
+           │ + H/M 结构
+           │ + alignment NPZ
+           │
+           │ [Step 4]
+           │ 04_project_performance_tsv.py
+           ↓
+┌────────────────────────────┐
+│ performance TSV (φ*)       │
+│ performance_refined.mid.tsv│
+└────────────────────────────┘
+```
+
+---
+
+## 步骤详解
+
+### Step 1: 构建 score.abcx
+
+**脚本**: `scripts/01_build_score_abcx.py`
+
+**输入**: 
+- `PianoCoRe/raw/Composer/Piece/score.mxl` (XML/MXL 格式)
+
+**输出**: 
+- `data/miditsv/Composer/Piece/score.abcx` (σ)
+
+**功能**:
+从 XML/MXL 转换生成 ABCX 格式，直接输出到最终目录。
+
+**执行**:
 ```bash
-python scripts/build_score_abcx.py \
+python scripts/01_build_score_abcx.py \
   --raw-dir PianoCoRe/raw \
   --output-dir data/miditsv \
   --jobs 32 \
   --force
 ```
 
-**Key Features**:
-- Validates ABCX syntax
-- Preserves voice structure
-- Handles multi-staff piano scores
-- Extracts annotations (dynamics, articulation, expression)
-- Outputs directly to final location (no intermediate copy needed)
+**ABCX 格式示例**:
+```
+<V000>
+[G3 A3 B3]
+<V001>
+[C4 D4 E4]
+```
 
 ---
 
-### Stage 2: Build H/M Structure
+### Step 2: 构建 H/M 结构 + 写入 aligned ABCX
 
-**Input**: 
-- `data/miditsv/Composer/Piece/score.abcx` (source, from Stage 1)
-- `PianoCoRe/raw/Composer/Piece/score_*.mid` (score MIDI)
+**脚本**: `scripts/02_build_hm_structure.py`
 
-**Output**:
-- H/M structure (in-memory, used by Stage 3)
+**输入**:
+- `data/miditsv/Composer/Piece/score.abcx` (σ)
+- `PianoCoRe/raw/Composer/Piece/score_*.mid` (ψ)
 
-**Script**: `scripts/rebuild_score_assets_from_metadata.py` (internal step)
+**输出**:
+- `data/miditsv/Composer/Piece/score_structure.json` (H/M 结构)
+- `data/miditsv/Composer/Piece/score_aligned.abcx` (σ*)
 
-This stage builds the hierarchical measure/phrase structure:
+**功能**:
+1. **提取小节网格**: 从 score MIDI 解析时间签名和小节边界
+2. **映射 ABCX 内容**: 将 ABCX 小节映射到 MIDI 小节
+3. **分组乐句**: 将小节分组为乐句（H）
+4. **写入结构**: 输出 JSON 格式的 H/M 层次结构
+5. **写入对齐 ABCX**: 插入 H/M 标记
 
-1. **Extract Measures from Score MIDI** (`ψ → M grid`):
-   - Parse time signatures and measure boundaries
-   - Create logical measure grid from MIDI timing
+**执行**:
+```bash
+python scripts/02_build_hm_structure.py \
+  --metadata data/score_metadata.csv \
+  --pianocore-root PianoCoRe \
+  --jobs 32
+```
 
-2. **Map ABCX Content to MIDI Measures** (`σ + M grid → H/M`):
-   - Match ABCX measures to MIDI measures
-   - Group measures into phrases (H)
-   - Handle repeats and expansions
+**H/M 结构**:
+- **H (Hierarchical)**: 乐句级别，包含多个小节
+- **M (Measure)**: 小节级别，对应 MIDI 的 measure
 
-**Key Algorithms**:
-- **Measure Detection**: Uses time signatures and note timing
-- **Phrase Mapping**: Matches ABCX content to MIDI measures
-- **Repeat Expansion**: Automatically detects and expands repeats
-
----
-
-### Stage 3a: Write Aligned ABCX
-
-**Input**:
-- H/M structure (from Stage 2)
-- `data/miditsv/Composer/Piece/score.abcx` (source)
-
-**Output**:
-- `data/miditsv/Composer/Piece/score_aligned.abcx` (aligned score)
-- `data/miditsv/Composer/Piece/score_structure.json` (H/M hierarchy)
-
-**Script**: `scripts/rebuild_score_assets_from_metadata.py`
-
-Generates aligned ABCX with H/M structural markers:
-
-- Insert phrase markers: `<H><V000>`
-- Insert measure markers: `<M><V000>`
-- Expand repeated sections
-- Maintain voice structure
-
-**Aligned ABCX Format**:
+**Aligned ABCX 格式**:
 ```
 <H><V000>
 <M><V000>
@@ -96,140 +160,103 @@ Generates aligned ABCX with H/M structural markers:
 [C4 D4 E4]
 ```
 
+**Structure JSON 格式**:
+```json
+{
+  "measures": [
+    {"id": 0, "start_tick": 0, "duration_tick": 480}
+  ],
+  "phrases": [
+    {"id": 0, "start_measure": 0, "end_measure": 3}
+  ],
+  "measure_to_phrase": {"0": 0, "1": 0, "2": 0}
+}
+```
+
 ---
 
-### Stage 3b: Write Score MIDI TSV
+### Step 3: 写入 annotated score TSV
 
-**Input**:
-- H/M structure (from Stage 2)
-- `PianoCoRe/raw/Composer/Piece/score_*.mid` (score MIDI events)
+**脚本**: `scripts/03_write_annotated_tsv.py`
 
-**Output**:
-- `data/miditsv/Composer/Piece/score.mid.tsv` (ψ*)
+**输入**:
+- `data/miditsv/Composer/Piece/score_structure.json` (H/M 结构)
+- `PianoCoRe/raw/Composer/Piece/score_*.mid` (ψ)
+- `data/miditsv/Composer/Piece/score.abcx` (σ, 含注释)
 
-**Script**: `scripts/rebuild_score_assets_from_metadata.py`
+**输出**:
+- `data/miditsv/Composer/Piece/score.annotated_score.mid.tsv` (ψ*)
 
-Generates tokenized score MIDI with structural markers (ψ → ψ*):
+**功能**:
+1. **标记化 MIDI 事件**: 音符、踏板、时间签名
+2. **添加 H/M 标记**: 插入乐句和小节行
+3. **提取注释**: 从 ABCX 提取力度、演奏法、表情等
+4. **合并注释**: 将注释插入到对应位置
 
-1. **Tokenize MIDI Events**:
-   - Notes: pitch, velocity, duration, voice
-   - Pedal events
-   - Time signatures
-
-2. **Add Structural Markers**:
-   - H rows: `H phrase_id start_tick duration_tick`
-   - M rows: `M measure_id start_tick duration_tick`
-
+**执行**:
 ```bash
-python scripts/rebuild_score_assets_from_metadata.py \
+python scripts/03_write_annotated_tsv.py \
   --metadata data/score_metadata.csv \
   --pianocore-root PianoCoRe \
   --jobs 32
 ```
 
-**TSV Format**:
+**注释类型**:
+- **力度**: pppp, ppp, pp, p, mp, mf, f, ff, fff, ffff
+- **演奏法**: accent, staccato, tenuto, sfz
+- **装饰音**: arpeggio, turn, trill
+- **范围**: crescendo, diminuendo
+- **踏板**: down, up
+- **表情**: a_tempo, dolce, rit, rall 等
+
+**TSV 格式**:
 ```
-H 0 0 1940
-M 0 0 480
-G3 80 480 0
-A3 75 240 0
-```
-
----
-
-### Stage 3c: Build Annotated Score MIDI TSV
-
-**Input**:
-- `data/miditsv/Composer/Piece/score.abcx` (with annotations)
-- `data/miditsv/Composer/Piece/score.mid.tsv` (ψ*, base TSV)
-- `data/miditsv/Composer/Piece/score_structure.json` (structure)
-
-**Output**:
-- `data/miditsv/Composer/Piece/score.annotated_score.mid.tsv` (ψ**)
-
-**Script**: `scripts/build_annotated_score_tsv.py`
-
-Extracts performance annotations from ABCX and merges them into the score MIDI TSV (ψ* → ψ**):
-
-**Annotation Types**:
-- **Dynamics**: `pppp`, `ppp`, `pp`, `p`, `mp`, `mf`, `f`, `ff`, `fff`, `ffff`
-- **Articulation**: `accent`, `staccato`, `tenuto`, `sfz`
-- **Ornaments**: `arpeggio`, `turn`, `trill`
-- **Range Markers**: `cre` (crescendo), `dim` (diminuendo), `trill`
-- **Pedal**: `down`, `up`
-- **Expression**: `a_tempo`, `dolce`, `rit`, `rall`, etc.
-
-```bash
-python scripts/build_annotated_score_tsv.py \
-  --metadata data/score_metadata.csv \
-  --pianocore-root PianoCoRe \
-  --jobs 32 \
-  --overwrite
-```
-
-**TSV Format**:
-```
-H 0 0 1940
-M 0 0 480
-dynamic p
-G3 80 480 0
+H	0	0	1940
+M	0	0	480
+dynamic	p
+G3	80	480	0
 accent
-A3 75 240 0
+A3	75	240	0
+pedal	down
 ```
+
+**列说明**:
+- **H 行**: `H phrase_id start_tick duration_tick`
+- **M 行**: `M measure_id start_tick duration_tick`
+- **音符行**: `pitch velocity duration voice_id`
+- **注释行**: `annotation_type value` 或 `annotation_type`
 
 ---
 
-### Stage 4: Project H/M Structure to Performance MIDI
+### Step 4: 投影到 performance TSV
 
-**Input**:
-- `data/miditsv/Composer/Piece/score_structure.json` (H/M structure)
-- `PianoCoRe/refined/Composer/Piece/performance_refined.mid` (performance MIDI)
-- `PianoCoRe/refined/Composer/Piece/performance_refined_align.npz` (alignment)
-
-**Output**:
-- `data/miditsv/Composer/Piece/performance_refined.mid.tsv`
-
-**Scripts**: 
-- S-tier: `scripts/build_pianocores_miditsv.py`
+**脚本**: 
+- S-tier: `scripts/04_project_performance_tsv.py`
 - A*-tier: `scripts/process_astar_performances.py`
 
-Projects the H/M structure onto performance MIDI using alignment data:
+**输入**:
+- `data/miditsv/Composer/Piece/score_structure.json` (H/M 结构)
+- `PianoCoRe/refined/Composer/Piece/performance_refined.mid` (φ)
+- `PianoCoRe/refined/Composer/Piece/performance_refined_align.npz` (对齐数据)
 
-1. **Load Alignment** (`ψ ↔ φ`):
-   - Read NPZ alignment mapping score → performance
-   - Map score note indices to performance note indices
+**输出**:
+- `data/miditsv/Composer/Piece/performance_refined.mid.tsv` (φ*)
 
-2. **Project Structure** (`H/M + alignment → φ*`):
-   - Assign H/M IDs to performance notes
-   - Interpolate structure for unaligned notes
-   - Preserve performance timing and dynamics
+**功能**:
+通过对齐数据（NPZ）将 H/M 结构投影到演奏 MIDI 的时间轴上。
 
-3. **Generate Performance TSV**:
-   - Same format as score TSV
-   - Uses actual performance timing and velocities
-   - Includes H/M structural markers
-
+**执行**:
 ```bash
-python scripts/build_pianocores_miditsv.py \
+# S-tier
+python scripts/04_project_performance_tsv.py \
   --metadata data/performance_S_metadata.csv \
   --pianocore-root PianoCoRe \
   --output-dir data/miditsv \
   --jobs 32 \
   --tier all \
   --overwrite-tsv
-```
 
----
-
-### Stage 4b: Build Performance MIDI TSV (A*-tier)
-
-**Input**: Same as Stage 4a, but for A*-tier performances  
-**Output**: `data/miditsv/Composer/Piece/performance_refined.mid.tsv`  
-**Script**: `scripts/process_astar_performances.py`
-
-Same process as Stage 4a, but processes A*-tier performances (high-quality subset).
-
-```bash
+# A*-tier
 python scripts/process_astar_performances.py \
   --metadata data/performance_Astar_metadata.csv \
   --pianocore-root PianoCoRe \
@@ -238,213 +265,181 @@ python scripts/process_astar_performances.py \
   --overwrite-tsv
 ```
 
+**对齐原理**:
+- NPZ 文件包含 score MIDI 和 performance MIDI 之间的对应关系
+- 通过对齐关系，将 score 的 H/M 时间戳映射到 performance 时间戳
+
+**Performance TSV 格式**:
+```
+H	0	0	2260
+M	0	0	520
+G3	71	495	0
+A3	64	235	0
+pedal	down
+```
+
 ---
 
-## Complete Pipeline Execution
+## 脚本使用
 
-Run all stages in sequence:
+### 完整流程
+
+执行所有步骤：
 
 ```bash
-python scripts/regenerate_all_pipeline.py --jobs 32
+python scripts/run_pipeline.py --jobs 32
 ```
 
-This master script executes all stages:
-1. Build score.abcx from XML/MXL
-2. Copy score.abcx to output directory
-3. Build score_aligned.abcx, structure.json, score.mid.tsv
-4. Build annotated score MIDI TSV
-5. Build S-tier performance TSV
-6. Build A*-tier performance TSV
+**选项**:
+- `--jobs N`: 并行进程数（默认：32）
+- `--skip-step1`: 跳过 Step 1
+- `--skip-step2`: 跳过 Step 2
+- `--skip-step3`: 跳过 Step 3
+- `--skip-step4-s`: 跳过 Step 4 (S-tier)
+- `--skip-step4-astar`: 跳过 Step 4 (A*-tier)
 
-**Options**:
-- `--jobs N`: Number of parallel workers (default: 32)
-- `--skip-score-abcx`: Skip Stage 1 (if already done)
-- `--skip-score-assets`: Skip Stages 2-3.5
-- `--skip-performance-s`: Skip Stage 4a
-- `--skip-performance-astar`: Skip Stage 4b
+### 单独执行步骤
 
----
+```bash
+# Step 1
+python scripts/01_build_score_abcx.py \
+  --raw-dir PianoCoRe/raw \
+  --output-dir data/miditsv \
+  --jobs 32
 
-## Data Flow Diagram
+# Step 2
+python scripts/02_build_hm_structure.py \
+  --metadata data/score_metadata.csv \
+  --jobs 32
 
-```
-Raw Score (σ₀)                    Score MIDI (ψ)
-XML/MXL                           score_*.mid
-    │                                  │
-    │ [1] build_score_abcx            │
-    ↓                                  │
-Source ABCX (σ)                       │
-data/miditsv/.../score.abcx          │
-    │                                  │
-    │ [2] build H/M structure         │
-    ├──────────────────────────────────┤
-    │                                  │
-    ↓                                  ↓
-    │                            H/M Structure
-    │                                  │
-    │ [3a] write aligned ABCX          │
-    ↓                                  │
-Aligned ABCX (σ*)                     │
-score_aligned.abcx                    │
-                                      │
-                              [3b] write score TSV
-                                      ↓
-                              Score TSV (ψ*)
-                              score.mid.tsv
-                                      │
-    σ (annotations)                   │
-    │ [3c] merge annotations          │
-    └──────────────────────────────────┤
-                                       ↓
-                            Annotated Score TSV (ψ**)
-                            score.annotated_score.mid.tsv
-                                       │
-                                       │
-    Performance MIDI (φ)               │
-    performance_refined.mid            │
-            │                          │
-            │ [4] project H/M via NPZ  │
-            ├──────────────────────────┘
-            │
-            ↓
-    Performance TSV (φ*)
-    performance_refined.mid.tsv
+# Step 3
+python scripts/03_write_annotated_tsv.py \
+  --metadata data/score_metadata.csv \
+  --jobs 32
+
+# Step 4 (S-tier)
+python scripts/04_project_performance_tsv.py \
+  --metadata data/performance_S_metadata.csv \
+  --jobs 32
 ```
 
 ---
 
-## Output File Structure
+## 符号说明
+
+| 符号 | 含义 | 文件 |
+|------|------|------|
+| **σ₀** | 原始 XML/MXL | `score.mxl` |
+| **σ** | 原始 ABCX | `score.abcx` |
+| **σ*** | 对齐的 ABCX（带 H/M 标记） | `score_aligned.abcx` |
+| **ψ** | 原始 score MIDI | `score_*.mid` |
+| **ψ*** | 带注释的 score TSV | `score.annotated_score.mid.tsv` |
+| **φ** | 原始 performance MIDI | `performance_refined.mid` |
+| **φ*** | performance TSV | `performance_refined.mid.tsv` |
+| **H/M** | 层次结构 | H=乐句，M=小节 |
+
+---
+
+## 输出文件结构
 
 ```
 data/miditsv/
 └── Composer/
     └── Piece/
-        ├── score.abcx                          # Source ABCX
-        ├── score_aligned.abcx                  # Aligned with H/M markers
-        ├── score_structure.json                # H/M hierarchy
-        ├── score.mid.tsv                       # Score MIDI tokenized
-        ├── score.annotated_score.mid.tsv       # Score with annotations
-        ├── performance_1.mid.tsv               # Performance 1 tokenized
-        ├── performance_2.mid.tsv               # Performance 2 tokenized
-        └── piece_interpretation.json           # Piece metadata
+        ├── score.abcx                          # σ (原始)
+        ├── score_aligned.abcx                  # σ* (对齐)
+        ├── score_structure.json                # H/M 结构
+        ├── score.annotated_score.mid.tsv       # ψ* (带注释)
+        ├── performance_1.mid.tsv               # φ* (演奏 1)
+        ├── performance_2.mid.tsv               # φ* (演奏 2)
+        └── piece_interpretation.json           # 元数据
 ```
 
 ---
 
-## TSV Format Specification
+## 技术细节
 
-### Structural Markers
+### H/M 层次结构
 
-```
-H phrase_id start_tick duration_tick
-M measure_id start_tick duration_tick
-```
+**H (Hierarchical - 乐句)**:
+- 包含多个连续的小节
+- 通常对应音乐的乐句或段落
+- 用于高层次的结构分析
 
-### Note Events
+**M (Measure - 小节)**:
+- 对应 MIDI 的一个 measure
+- 由时间签名定义边界
+- 是最小的结构单位
 
-```
-pitch velocity duration voice_id
-```
+### 对齐算法
 
-- `pitch`: MIDI pitch (e.g., `C4`, `G#3`)
-- `velocity`: 0-127 (performance) or quantized (score)
-- `duration`: in ticks
-- `voice_id`: 0-based voice index
+1. **小节检测**: 使用时间签名和音符时间
+2. **乐句映射**: 匹配 ABCX 内容到 MIDI 小节
+3. **重复展开**: 自动检测和展开重复段落
 
-### Annotations (Annotated Score TSV only)
+### 注释提取
 
-```
-dynamic <level>          # pppp, ppp, pp, p, mp, mf, f, ff, fff, ffff
-articulation <type>      # accent, staccato, tenuto, sfz
-ornament <type>          # arpeggio, turn
-range_start <type>       # cre, dim, trill
-range_end <type>         # cre, dim, trill
-pedal <action>           # down, up
-expression <term>        # a_tempo, dolce, rit, rall, etc.
-```
+从 ABCX 的 XML 结构中提取：
+- `<dynamics>`: 力度标记
+- `<articulations>`: 演奏法
+- `<ornaments>`: 装饰音
+- `<direction>`: 表情和踏板
 
 ---
 
-## Metadata Files
+## 数据统计
 
-### score_metadata.csv
+**生成数据总览**:
+- ✅ Step 1: 1,600 个 score.abcx
+- ✅ Step 2: 7,252 个 structure.json + aligned ABCX
+- ✅ Step 3: 7,252 个 annotated score TSV
+- ✅ Step 4 (S-tier): 62,969 个 performance TSV
+- ✅ Step 4 (A*-tier): 66,450 个 performance TSV
 
-Tracks all score files and their outputs:
-
-- `score_abcx_path`: Source ABCX location
-- `score_aligned_path`: Aligned ABCX output
-- `score_json_path`: Structure JSON output
-- `score_midi_tsv_path`: Score MIDI TSV output
-- `annotated_score_midi_path`: Annotated score TSV output
-
-### performance_S_metadata.csv / performance_Astar_metadata.csv
-
-Tracks all performance files:
-
-- `refined_performance_midi_path`: Performance MIDI
-- `refined_alignment_path`: Alignment NPZ
-- `performance_tsv_path`: Performance TSV output
-- `score_abcx_path`: Corresponding score
+**总计**: 129,419 个 performance TSV 文件
 
 ---
 
-## Quality Metrics
+## 相关文档
 
-### Stage 1: Score ABCX
-- **Success Rate**: ~99.6% (1600/1607)
-- **Common Failures**: Corrupted ZIP files
-
-### Stage 2-3: Score Assets
-- **Success Rate**: 100% (7252/7252)
-- **Paired Scores**: 1344 (with MIDI)
-- **Orphan Scores**: 5908 (ABCX only)
-
-### Stage 3.5: Annotated Score TSV
-- **Coverage**: All paired scores with annotations
-- **Annotation Types**: 6 categories, 50+ terms
-
-### Stage 4: Performance TSV
-- **S-tier**: 1587 scores, 62969 performances
-- **A*-tier**: High-quality subset
-- **Alignment Quality**: Median recall >95%
+- **流程图**: `docs/score_performance_alignment_tikz.pdf`
+- **脚本说明**: `scripts/README.md`
+- **脚本结构**: `docs/FINAL_SCRIPT_STRUCTURE.md`
 
 ---
 
-## Troubleshooting
+## 常见问题
 
-### Missing Source Files
+### Q: 为什么 Step 2 同时输出 structure.json 和 aligned ABCX？
 
-If `score.abcx` is missing in `PianoCoRe/score/`:
+A: 因为它们是紧密耦合的。构建 H/M 结构后立即写入 aligned ABCX 是最自然的流程，避免了不必要的中间步骤。
+
+### Q: 为什么不生成中间的 score.mid.tsv？
+
+A: Step 3 直接生成带注释的 TSV (ψ*)，避免了生成中间文件再合并的冗余步骤。
+
+### Q: orphan scores 是什么？
+
+A: 没有对应 score MIDI 的乐谱。这些乐谱只能生成 aligned ABCX，无法生成 TSV。
+
+### Q: 如何验证生成的数据？
+
+A: 检查输出文件：
 ```bash
-python scripts/build_score_abcx.py --raw-dir PianoCoRe/raw --output-dir PianoCoRe/score --jobs 32 --force
+# 检查 H/M 结构
+cat data/miditsv/Composer/Piece/score_structure.json | jq .
+
+# 检查 TSV 格式
+head -20 data/miditsv/Composer/Piece/score.annotated_score.mid.tsv
 ```
 
-### Metadata Path Issues
-
-Ensure metadata points to correct paths:
-- `score_abcx_path` should point to `data/miditsv/.../score.abcx`
-- Source files are in `PianoCoRe/score/.../score.abcx`
-
-### Alignment Failures
-
-Check alignment quality in metadata:
-- `refined_recall`: Should be >0.90
-- `refined_alignment_path`: Must exist
-
 ---
 
-## Performance Optimization
+## 更新日志
 
-- **Parallel Processing**: Use `--jobs 32` for 32-core systems
-- **Incremental Updates**: Skip completed stages with `--skip-*` flags
-- **Memory Usage**: ~2GB per worker for large scores
-- **Disk I/O**: SSD recommended for large datasets
+**2026-05-29**: 
+- 重构脚本结构，将 Step 2 和 Step 3a 合并
+- 简化符号系统，ψ* 直接表示带注释的 TSV
+- 更新所有文档和流程图
 
----
-
-## References
-
-- **ABCX Format**: Extended ABC notation with voice markers
-- **H/M Structure**: Hierarchical (phrase) / Measure structure
-- **Alignment**: DTW-based score-performance alignment
-- **Tokenization**: LM-MIDI format for language modeling
+**初始版本**: 完整的数据生成流程
