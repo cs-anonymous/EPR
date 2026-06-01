@@ -1583,34 +1583,93 @@ def align_performance_with_score(
             perf_measure_times[midi_mnum] = []
         perf_measure_times[midi_mnum].append(perf_time)
 
-    # Build contiguous time ranges for each MIDI measure.
-    # The perf_measure_times gives us a distribution of performance times per
-    # measure. We use min/max of these times, then merge gaps between
-    # consecutive measures so that M[i].end == M[i+1].start.
-    sorted_mnums = sorted(perf_measure_times.keys())
-    if not sorted_mnums:
+    # Build contiguous time ranges for every score MIDI measure.  Some score
+    # measures have no aligned performance note (rests, cadential gaps, or
+    # heavily filtered alignment).  They still need structural M rows so score
+    # and performance TSVs stay measure-aligned.
+    observed_mnums = sorted(perf_measure_times.keys())
+    if not observed_mnums:
         return []
 
     # Step 1: compute raw per-measure time boundaries
     raw_bounds: dict[int, tuple[float, float]] = {}
-    for mnum in sorted_mnums:
+    for mnum in observed_mnums:
         times = perf_measure_times[mnum]
         raw_bounds[mnum] = (min(times), max(times))
 
-    # Step 2: make measures contiguous — each measure's end becomes the next
-    # measure's start, using the midpoint between max of current and min of next.
-    contiguous: list[tuple[int, float, float]] = []
-    for i, mnum in enumerate(sorted_mnums):
+    canonical_mnums = [measure.measure_num for measure in score_structure.measures]
+    canonical_set = set(canonical_mnums)
+    observed_mnums = [mnum for mnum in observed_mnums if mnum in canonical_set]
+    observed_set = set(observed_mnums)
+
+    # Step 2: estimate boundaries at observed measures, then interpolate missing
+    # measures between neighboring observed anchors.  Missing leading/trailing
+    # measures are extrapolated from score-measure duration ratios.
+    observed_start: dict[int, float] = {}
+    observed_end: dict[int, float] = {}
+    for i, mnum in enumerate(observed_mnums):
         raw_start, raw_end = raw_bounds[mnum]
-        if i < len(sorted_mnums) - 1:
-            next_mnum = sorted_mnums[i + 1]
-            next_raw_start, _ = raw_bounds[next_mnum]
-            contiguous_end = (raw_end + next_raw_start) / 2
+        observed_start[mnum] = raw_start if i == 0 else observed_end[observed_mnums[i - 1]]
+        if i < len(observed_mnums) - 1:
+            next_raw_start, _ = raw_bounds[observed_mnums[i + 1]]
+            observed_end[mnum] = (raw_end + next_raw_start) / 2
         else:
-            # Last measure: use raw end + small buffer
-            contiguous_end = raw_end + 0.1
-        contiguous_start = raw_start if i == 0 else contiguous[-1][2]
-        contiguous.append((mnum, contiguous_start, contiguous_end))
+            observed_end[mnum] = raw_end + 0.1
+
+    score_duration = {
+        measure.measure_num: max(1e-6, measure.end_time - measure.start_time)
+        for measure in score_structure.measures
+    }
+
+    def distribute_gap(mnums: list[int], start: float, end: float) -> list[tuple[int, float, float]]:
+        total_weight = sum(score_duration.get(mnum, 1.0) for mnum in mnums)
+        cursor = start
+        spans: list[tuple[int, float, float]] = []
+        for idx, mnum in enumerate(mnums):
+            if idx == len(mnums) - 1:
+                next_cursor = end
+            else:
+                width = (end - start) * score_duration.get(mnum, 1.0) / total_weight
+                next_cursor = cursor + width
+            spans.append((mnum, cursor, max(cursor, next_cursor)))
+            cursor = next_cursor
+        return spans
+
+    contiguous: list[tuple[int, float, float]] = []
+    first_observed = observed_mnums[0]
+    first_index = canonical_mnums.index(first_observed)
+    if first_index > 0:
+        leading = canonical_mnums[:first_index]
+        total_weight = sum(score_duration.get(mnum, 1.0) for mnum in leading)
+        first_width = max(
+            0.01,
+            observed_end[first_observed] - observed_start[first_observed],
+        )
+        leading_duration = total_weight * first_width / score_duration.get(first_observed, 1.0)
+        contiguous.extend(distribute_gap(leading, observed_start[first_observed] - leading_duration, observed_start[first_observed]))
+
+    idx = first_index
+    while idx < len(canonical_mnums):
+        mnum = canonical_mnums[idx]
+        if mnum in observed_set:
+            contiguous.append((mnum, observed_start[mnum], observed_end[mnum]))
+            idx += 1
+            continue
+
+        gap_start_idx = idx
+        while idx < len(canonical_mnums) and canonical_mnums[idx] not in observed_set:
+            idx += 1
+        gap_mnums = canonical_mnums[gap_start_idx:idx]
+        prev_end = contiguous[-1][2] if contiguous else observed_start[first_observed]
+        if idx < len(canonical_mnums):
+            next_start = observed_start[canonical_mnums[idx]]
+            contiguous.extend(distribute_gap(gap_mnums, prev_end, next_start))
+        else:
+            prev_mnum = contiguous[-1][0]
+            prev_width = max(0.01, contiguous[-1][2] - contiguous[-1][1])
+            total_weight = sum(score_duration.get(mnum, 1.0) for mnum in gap_mnums)
+            trailing_duration = total_weight * prev_width / score_duration.get(prev_mnum, 1.0)
+            contiguous.extend(distribute_gap(gap_mnums, prev_end, prev_end + trailing_duration))
 
     # Step 3: compute phrase-level contiguous time ranges
     phrase_bounds: dict[str, tuple[int, float, float]] = {}

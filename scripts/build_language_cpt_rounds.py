@@ -1,34 +1,24 @@
 #!/usr/bin/env python3
-"""Build mixed/shuffled multi-round CPT JSONL datasets for CorporaV2."""
+"""Build shuffled language CPT rounds for CorporaV2.
+
+Performance corpora are shuffled first, then split into S/Astar rounds. Each
+round is mixed with a full copy of annotated score MIDI records and shuffled
+again before writing the final train_*.jsonl file.
+"""
 
 from __future__ import annotations
 
 import argparse
 import json
-import math
 import random
-import shutil
 import subprocess
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Iterator
+from typing import Iterator
 
 
-@dataclass(frozen=True)
-class RoundPlan:
-    name: str
-    perf_file: str
-    perf_kind: str
-    bucket_index: int
-    bucket_count: int
-
-
-ROUND_PLANS = [
-    RoundPlan("round1", "performance_S_midi.jsonl", "performance_S", 0, 2),
-    RoundPlan("round2", "performance_S_midi.jsonl", "performance_S", 1, 2),
-    RoundPlan("round3", "performance_Astar_midi.json", "performance_Astar", 0, 3),
-    RoundPlan("round4", "performance_Astar_midi.json", "performance_Astar", 1, 3),
-    RoundPlan("round5", "performance_Astar_midi.json", "performance_Astar", 2, 3),
+PERFORMANCE_PLANS = [
+    ("S", "performance_S_midi.jsonl", 2, 0),
+    ("Astar", "performance_Astar_midi.json", 3, 1),
 ]
 
 
@@ -85,106 +75,182 @@ def iter_records(path: Path) -> Iterator[dict]:
         yield from iter_json_array(path)
 
 
-def unique_sources(path: Path) -> list[str]:
-    seen: set[str] = set()
-    ordered: list[str] = []
-    for record in iter_records(path):
-        source = record["source"]
-        if source in seen:
-            continue
-        seen.add(source)
-        ordered.append(source)
-    ordered.sort()
-    return ordered
-
-
-def bucket_sources(sources: list[str], bucket_count: int) -> list[list[str]]:
-    if bucket_count <= 0:
-        raise ValueError("bucket_count must be positive")
-    per_bucket = math.ceil(len(sources) / bucket_count)
-    return [sources[idx * per_bucket : (idx + 1) * per_bucket] for idx in range(bucket_count)]
-
-
-def copy_selected_records(
-    input_path: Path,
-    output_handle,
-    allowed_sources: set[str] | None,
-) -> tuple[int, set[str]]:
-    written = 0
-    used_sources: set[str] = set()
-    for record in iter_records(input_path):
-        source = record["source"]
-        if allowed_sources is not None and source not in allowed_sources:
-            continue
-        output_handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-        written += 1
-        used_sources.add(source)
-    return written, used_sources
+def write_records_as_jsonl(input_path: Path, output_path: Path) -> int:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    count = 0
+    with output_path.open("w", encoding="utf-8") as handle:
+        for record in iter_records(input_path):
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+            count += 1
+    return count
 
 
 def shuffle_jsonl(temp_path: Path, output_path: Path, seed: int) -> None:
-    random_source = temp_path.with_suffix(temp_path.suffix + ".rand")
+    keyed_path = temp_path.with_suffix(temp_path.suffix + ".keyed")
     rng = random.Random(seed)
-    with random_source.open("wb") as handle:
-        handle.write(bytes(rng.randrange(0, 256) for _ in range(1 << 20)))
 
     try:
-        with output_path.open("w", encoding="utf-8") as out_handle:
-            subprocess.run(
-                ["shuf", "--random-source", str(random_source), str(temp_path)],
-                check=True,
-                stdout=out_handle,
+        with temp_path.open("rb") as source, keyed_path.open("wb") as keyed:
+            for line in source:
+                keyed.write(f"{rng.getrandbits(128):032x}\t".encode("ascii"))
+                keyed.write(line)
+
+        with output_path.open("wb") as out_handle:
+            sort_proc = subprocess.Popen(
+                ["sort", "-S", "50%", "-t", "\t", "-k1,1", str(keyed_path)],
+                stdout=subprocess.PIPE,
             )
+            assert sort_proc.stdout is not None
+            for raw_line in sort_proc.stdout:
+                _, payload = raw_line.split(b"\t", 1)
+                out_handle.write(payload)
+            return_code = sort_proc.wait()
+            if return_code != 0:
+                raise subprocess.CalledProcessError(return_code, sort_proc.args)
     finally:
-        random_source.unlink(missing_ok=True)
+        keyed_path.unlink(missing_ok=True)
 
 
 def file_size_mb(path: Path) -> float:
     return path.stat().st_size / 1024 / 1024
 
 
-def build_round(
-    corpora_dir: Path,
-    output_dir: Path,
-    plan: RoundPlan,
-    seed: int,
-    annotated_records_path: Path,
-) -> dict:
-    perf_path = corpora_dir / plan.perf_file
-    sources = unique_sources(perf_path)
-    buckets = bucket_sources(sources, plan.bucket_count)
-    selected_sources = set(buckets[plan.bucket_index])
+def count_lines(path: Path) -> int:
+    count = 0
+    with path.open("rb") as handle:
+        for _ in handle:
+            count += 1
+    return count
 
-    tmp_path = output_dir / f"{plan.name}.tmp.jsonl"
-    final_path = output_dir / f"{plan.name}_train.jsonl"
-    tmp_path.parent.mkdir(parents=True, exist_ok=True)
+
+def split_jsonl_evenly(input_path: Path, output_dir: Path, prefix: str, parts: int) -> list[dict]:
+    total = count_lines(input_path)
+    base, extra = divmod(total, parts)
+    summaries = []
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    with input_path.open("r", encoding="utf-8") as source:
+        for idx in range(parts):
+            part_size = base + (1 if idx < extra else 0)
+            round_name = f"train_{prefix}{idx + 1}"
+            output_path = output_dir / f"{round_name}.performance.tmp.jsonl"
+            written = 0
+            with output_path.open("w", encoding="utf-8") as target:
+                for _ in range(part_size):
+                    line = source.readline()
+                    if not line:
+                        break
+                    target.write(line)
+                    written += 1
+            summaries.append(
+                {
+                    "round": round_name,
+                    "performance_part_path": str(output_path),
+                    "performance_records": written,
+                    "performance_part_index": idx + 1,
+                    "performance_part_count": parts,
+                }
+            )
+    return summaries
+
+
+def append_file(src: Path, dst_handle) -> int:
+    written = 0
+    with src.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if line.strip():
+                dst_handle.write(line)
+                written += 1
+    return written
+
+
+def build_final_round(
+    *,
+    round_spec: dict,
+    annotated_path: Path,
+    annotated_count: int,
+    output_dir: Path,
+    seed: int,
+) -> dict:
+    round_name = round_spec["round"]
+    perf_part_path = Path(round_spec["performance_part_path"])
+    tmp_path = output_dir / f"{round_name}.mixed.tmp.jsonl"
+    final_path = output_dir / f"{round_name}.jsonl"
 
     with tmp_path.open("w", encoding="utf-8") as handle:
-        annotated_count, annotated_sources = copy_selected_records(annotated_records_path, handle, None)
-        perf_count, perf_used_sources = copy_selected_records(perf_path, handle, selected_sources)
+        copied_annotated = append_file(annotated_path, handle)
+        copied_perf = append_file(perf_part_path, handle)
 
-    shuffle_jsonl(tmp_path, final_path, seed=seed + plan.bucket_index)
+    if copied_annotated != annotated_count:
+        raise RuntimeError(
+            f"annotated count changed while building {round_name}: "
+            f"expected {annotated_count}, got {copied_annotated}"
+        )
+    if copied_perf != round_spec["performance_records"]:
+        raise RuntimeError(
+            f"performance count changed while building {round_name}: "
+            f"expected {round_spec['performance_records']}, got {copied_perf}"
+        )
+
+    shuffle_jsonl(tmp_path, final_path, seed=seed)
     tmp_path.unlink(missing_ok=True)
+    perf_part_path.unlink(missing_ok=True)
 
-    summary = {
-        "round": plan.name,
+    return {
+        **{k: v for k, v in round_spec.items() if k != "performance_part_path"},
         "output_path": str(final_path),
         "output_size_mb": round(file_size_mb(final_path), 2),
-        "seed": seed + plan.bucket_index,
-        "annotated_score_file": str(annotated_records_path),
+        "final_shuffle_seed": seed,
+        "annotated_score_file": str(annotated_path),
         "annotated_score_records": annotated_count,
-        "annotated_score_sources": len(annotated_sources),
-        "performance_file": str(perf_path),
-        "performance_kind": plan.perf_kind,
-        "performance_bucket_index": plan.bucket_index + 1,
-        "performance_bucket_count": plan.bucket_count,
-        "performance_candidate_sources": len(sources),
-        "performance_selected_sources": len(selected_sources),
-        "performance_written_sources": len(perf_used_sources),
-        "performance_records": perf_count,
-        "total_records": annotated_count + perf_count,
+        "total_records": annotated_count + round_spec["performance_records"],
     }
-    return summary
+
+
+def build_performance_rounds(
+    *,
+    corpora_dir: Path,
+    output_dir: Path,
+    tier: str,
+    perf_file: str,
+    parts: int,
+    seed: int,
+    annotated_path: Path,
+    annotated_count: int,
+) -> list[dict]:
+    perf_path = corpora_dir / perf_file
+    if not perf_path.exists():
+        raise FileNotFoundError(perf_path)
+
+    normalized_path = output_dir / f"performance_{tier}_midi.jsonl.tmp"
+    shuffled_path = corpora_dir / f"performance_{tier}_midi_shuffled.jsonl"
+
+    performance_records = write_records_as_jsonl(perf_path, normalized_path)
+    shuffle_jsonl(normalized_path, shuffled_path, seed=seed)
+    normalized_path.unlink(missing_ok=True)
+
+    part_specs = split_jsonl_evenly(shuffled_path, output_dir, tier, parts)
+    summaries = []
+    for part_spec in part_specs:
+        part_index = part_spec["performance_part_index"]
+        round_seed = seed + 1000 + part_index
+        summary = build_final_round(
+            round_spec=part_spec,
+            annotated_path=annotated_path,
+            annotated_count=annotated_count,
+            output_dir=output_dir,
+            seed=round_seed,
+        )
+        summary.update(
+            {
+                "performance_file": str(perf_path),
+                "performance_shuffled_file": str(shuffled_path),
+                "performance_shuffle_seed": seed,
+                "performance_total_records": performance_records,
+            }
+        )
+        summaries.append(summary)
+    return summaries
 
 
 def main() -> None:
@@ -197,22 +263,34 @@ def main() -> None:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("data/CorporaV2/language_cpt_rounds"),
+        default=None,
     )
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
     corpora_dir = args.corpora_dir
-    output_dir = args.output_dir
+    output_dir = args.output_dir or corpora_dir / "rounds"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     annotated_path = corpora_dir / "annotated_score_midi.jsonl"
     if not annotated_path.exists():
         raise FileNotFoundError(annotated_path)
+    annotated_count = count_lines(annotated_path)
 
     summaries = []
-    for plan in ROUND_PLANS:
-        summaries.append(build_round(corpora_dir, output_dir, plan, args.seed, annotated_path))
+    for tier, perf_file, parts, seed_offset in PERFORMANCE_PLANS:
+        summaries.extend(
+            build_performance_rounds(
+                corpora_dir=corpora_dir,
+                output_dir=output_dir,
+                tier=tier,
+                perf_file=perf_file,
+                parts=parts,
+                seed=args.seed + seed_offset,
+                annotated_path=annotated_path,
+                annotated_count=annotated_count,
+            )
+        )
 
     summary_path = output_dir / "round_build_summary.json"
     summary_path.write_text(json.dumps(summaries, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

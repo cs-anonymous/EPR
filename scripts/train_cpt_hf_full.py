@@ -119,6 +119,7 @@ def main() -> None:
         save_strategy="steps",
         save_steps=args.save_steps,
         save_total_limit=args.save_total_limit,
+        save_only_model=True,
         dataloader_num_workers=args.dataloader_num_workers,
         dataloader_pin_memory=True,
         remove_unused_columns=False,

@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export PYTHONPATH="${ROOT_DIR}:${PYTHONPATH:-}"
 
-ROUNDS_DIR="${ROUNDS_DIR:-${ROOT_DIR}/data/CorporaV2/language_cpt_rounds}"
+ROUNDS_DIR="${ROUNDS_DIR:-${ROOT_DIR}/data/CorporaV2/language_cpt/rounds}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-${ROOT_DIR}/output/cpt_qwen35_08b_full_rounds}"
 BASE_MODEL="${BASE_MODEL:-${ROOT_DIR}/Qwen3.5-0.8B-LM-MIDI-Resized}"
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
@@ -50,7 +50,7 @@ latest_resume_checkpoint() {
 run_round() {
   local round_name="$1"
   local model_path="$2"
-  local dataset_path="${ROUNDS_DIR}/${round_name}_train.jsonl"
+  local dataset_path="${ROUNDS_DIR}/${round_name}.jsonl"
   local output_dir="${OUTPUT_ROOT}/${round_name}"
   local resume_ckpt=""
 
@@ -102,7 +102,7 @@ main() {
   mkdir -p "${OUTPUT_ROOT}"
 
   local current_model="${BASE_MODEL}"
-  for round_name in round1 round2 round3 round4 round5; do
+  for round_name in train_S1 train_S2 train_Astar1 train_Astar2 train_Astar3; do
     if [[ -d "${OUTPUT_ROOT}/${round_name}/final_model" ]]; then
       echo "=== ${round_name} already finished, using final_model ==="
     else
