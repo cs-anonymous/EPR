@@ -32,7 +32,7 @@ mkdir -p "${OUTPUT_ROOT}"
 torchrun \
   --nproc_per_node "${NPROC_PER_NODE}" \
   --master_port "${MASTER_PORT}" \
-  "${ROOT_DIR}/scripts/train_cpt_hf_full_continuous_rounds.py" \
+  "${ROOT_DIR}/scripts/training/train_cpt_hf_full_continuous_rounds.py" \
   --model "${BASE_MODEL}" \
   --rounds-dir "${ROUNDS_DIR}" \
   --rounds train_S1 train_S2 train_Astar1 train_Astar2 train_Astar3 \

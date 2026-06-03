@@ -171,6 +171,59 @@ def rotate_checkpoints(output_dir: Path, save_total_limit: int) -> None:
                 child.rmdir()
         old.rmdir()
 
+# ---------- validation ----------
+def run_validation(
+    model,
+    tokenizer,
+    val_dataloader,
+    device,
+    global_step: int,
+    best_val_loss: float,
+):
+    """Run validation and return average loss"""
+    model.eval()
+    total_val_loss = 0.0
+    total_val_tokens = 0
+
+    with torch.no_grad():
+        for batch in val_dataloader:
+            batch = {k: v.to(device) for k, v in batch.items()}
+            outputs = model(**batch)
+
+            # Count actual tokens (not padding)
+            labels = batch['labels']
+            valid_tokens = (labels != -100).sum().item()
+
+            total_val_loss += outputs.loss.item() * valid_tokens
+            total_val_tokens += valid_tokens
+
+    # All-reduce across GPUs
+    if is_dist():
+        loss_tensor = torch.tensor(total_val_loss, device=device)
+        tokens_tensor = torch.tensor(total_val_tokens, device=device)
+        dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
+        dist.all_reduce(tokens_tensor, op=dist.ReduceOp.SUM)
+        total_val_loss = loss_tensor.item()
+        total_val_tokens = tokens_tensor.item()
+
+    avg_val_loss = total_val_loss / max(total_val_tokens, 1)
+    model.train()
+
+    # Track best
+    is_best = avg_val_loss < best_val_loss
+    if is_best:
+        best_val_loss = avg_val_loss
+
+    if is_main():
+        print("\n" + "="*80, flush=True)
+        print(f"📊 Validation @ Step {global_step}", flush=True)
+        print("="*80, flush=True)
+        print(f"  Val Loss: {avg_val_loss:.4f}  {'🎯 NEW BEST!' if is_best else ''}", flush=True)
+        print(f"  Best Val Loss: {best_val_loss:.4f}", flush=True)
+        print("="*80 + "\n", flush=True)
+
+    return avg_val_loss, best_val_loss
+
 # ---------- args ----------
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
@@ -198,6 +251,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-gradient-checkpointing", dest="gradient_checkpointing", action="store_false")
     parser.add_argument("--resume-from-global-step", type=int, default=0,
                         help="Global step to resume from (e.g., 28180). Will skip completed steps.")
+    parser.add_argument("--val-file", type=str, default=None,
+                        help="Validation file (e.g., val_S.jsonl)")
+    parser.add_argument("--eval-steps", type=int, default=500,
+                        help="Run validation every N steps")
     return parser.parse_args()
 
 # ---------- main ----------
@@ -249,6 +306,34 @@ def main() -> None:
         total_update_steps += update_steps
         round_specs.append((round_name, dataset_path, len(raw_dataset), update_steps))
 
+    # Load validation data if specified
+    val_dataloader = None
+    best_val_loss = float('inf')
+    if args.val_file:
+        val_path = args.rounds_dir / args.val_file
+        if val_path.is_file():
+            if is_main():
+                print(f"📊 Loading validation data from {val_path}", flush=True)
+            val_dataset = load_dataset("json", data_files=str(val_path), split="train")
+            val_sampler = DistributedSampler(
+                val_dataset,
+                num_replicas=world_size(),
+                rank=rank(),
+                shuffle=False,
+            ) if is_dist() else None
+            # Will create collator later after SFTCollator is defined
+            if is_main():
+                print(f"✅ Loaded {len(val_dataset)} validation samples", flush=True)
+                print(f"📊 Will validate every {args.eval_steps} steps\n", flush=True)
+        else:
+            if is_main():
+                print(f"⚠️  Validation file not found: {val_path}", flush=True)
+            val_dataset = None
+            val_sampler = None
+    else:
+        val_dataset = None
+        val_sampler = None
+
     training_args = TrainingArguments(
         output_dir=str(args.output_dir),
         per_device_train_batch_size=args.per_device_train_batch_size,
@@ -299,6 +384,19 @@ def main() -> None:
         num_training_steps=total_update_steps,
     )
     collator = SFTCollator(tokenizer, args.max_length)
+
+    # Create validation dataloader if validation data was loaded
+    if val_dataset is not None:
+        val_dataloader = DataLoader(
+            val_dataset,
+            batch_size=args.per_device_train_batch_size,
+            sampler=val_sampler,
+            collate_fn=collator,
+            num_workers=args.dataloader_num_workers,
+            pin_memory=True,
+        )
+    else:
+        val_dataloader = None
 
     manifest = {
         "model": str(args.model),
@@ -466,6 +564,32 @@ def main() -> None:
                             epoch=epoch + 1,
                         )
                         rotate_checkpoints(round_output_dir, args.save_total_limit)
+
+                        # Run validation if enabled
+                        if val_dataloader and args.eval_steps > 0 and global_step % args.eval_steps == 0:
+                            avg_val_loss, best_val_loss = run_validation(
+                                model=unwrap_model(model),
+                                tokenizer=tokenizer,
+                                val_dataloader=val_dataloader,
+                                device=device,
+                                global_step=global_step,
+                                best_val_loss=best_val_loss,
+                            )
+                            # Save best model
+                            if avg_val_loss == best_val_loss and is_main():
+                                best_model_dir = args.output_dir / "best_model"
+                                save_checkpoint(
+                                    model=model,
+                                    tokenizer=tokenizer,
+                                    output_dir=args.output_dir,
+                                    global_step=global_step,
+                                    round_name="best",
+                                    epoch=epoch + 1,
+                                    final_round_save=True,
+                                    final_model_dir=best_model_dir,
+                                )
+                                print(f"💾 Saved best model to {best_model_dir}\n", flush=True)
+
                 iterator_started_at = time.time()
 
         round_output_dir = args.output_dir / round_name

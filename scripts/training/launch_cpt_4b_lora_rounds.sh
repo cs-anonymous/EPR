@@ -91,7 +91,7 @@ run_round() {
     torchrun
     --nproc_per_node "${NPROC_PER_NODE}"
     --master_port "${MASTER_PORT}"
-    "${ROOT_DIR}/scripts/train_cpt_hf_peft.py"
+    "${ROOT_DIR}/scripts/training/train_cpt_hf_peft.py"
     --model "${model_path}"
     --dataset "${dataset_path}"
     --output-dir "${output_dir}"
