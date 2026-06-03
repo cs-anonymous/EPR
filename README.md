@@ -39,9 +39,9 @@ The current summary is grounded in existing repository documentation:
 | `data/ASTAR_PROCESSING_SUMMARY.md` | A* performance processing counts and `process_astar_performances.py` role. | Useful processing report. Current code should regenerate into `miditsv/`. |
 | `data/CorporaV2/README.md` | CorporaV2 language CPT file inventory and measure-boundary chunking rules. | CorporaV2 reference snapshot; root README records current preferred flow. |
 | `backup/legacy_Corpora/README.md` | Old corpus statistics and task definitions. | Legacy reference only; moved out of the active data tree. |
-| `docs/SCORE_PERFORMANCE_ALIGNMENT_PIPELINE.md` | Metadata-driven score-performance alignment principle. | Conceptually important, but output path examples are old. |
+| `docs/score_performance_alignment_pipeline.md` | Metadata-driven score-performance alignment principle. | Conceptually important, but output path examples are old. |
 | `docs/lm_midi_tokenizer.md` | LM-MIDI fixed-width event/token semantics. | Active format reference. |
-| `ANNOTATED_SCORE_GENERATION_REPORT.md` | Annotated score MIDI-TSV generation coverage and score metadata notes. | Active score-side report. |
+| `docs/ANNOTATED_SCORE_GENERATION_REPORT.md` | Annotated score MIDI-TSV generation coverage and score metadata notes. | Active score-side report. |
 | `docs/SPIRE SFT 设计.md` | EPR/SFT task framing and symbolic notation. | Design reference; current implementation is CorporaV2-focused. |
 | `docs/CPT_LANGUAGE_TRAINING.md` | Older CPT training observations and FlashAttention notes. | Historical training notes; model/data paths may be outdated. |
 
@@ -71,11 +71,11 @@ Current inputs are limited to:
 
 Relevant scripts:
 
-- `scripts/download_pianocore_refined.py`: download PianoCoRe refined assets.
-- `scripts/build_score_abcx.py`: build canonical `PianoCoRe/score/**/score.abcx` from PianoCoRe score sources.
-- `scripts/convert_imslp_to_abcx.py`, `scripts/reconvert_imslp_with_metadata.py`: score-only ABCX conversion helpers for the unpaired-score bucket.
-- `scripts/generate_unpaired_metadata.py`: metadata for unpaired score assets.
-- `scripts/build_piece_interpretations.py`, `scripts/collect_piece_interpretations.py`, `scripts/search_piece_interpretations.py`: piece-level interpretation resources.
+- `scripts/data_processing/download_pianocore_refined.py`: download PianoCoRe refined assets.
+- `scripts/pipeline/01_build_score_abcx.py`: build canonical `PianoCoRe/score/**/score.abcx` from PianoCoRe score sources.
+- `scripts/data_processing/convert_imslp_to_abcx.py`, `scripts/data_processing/reconvert_imslp_with_metadata.py`: score-only ABCX conversion helpers for the unpaired-score bucket.
+- `scripts/data_processing/generate_unpaired_metadata.py`: metadata for unpaired score assets.
+- `scripts/data_processing/build_piece_interpretations.py`, `scripts/data_processing/collect_piece_interpretations.py`, `scripts/data_processing/search_piece_interpretations.py`: piece-level interpretation resources.
 
 ### 2. Symbolic Normalization And Alignment
 
@@ -91,7 +91,7 @@ Current entry points:
 
 ```bash
 # Paired PianoCoRe S metadata -> data/miditsv
-python scripts/build_pianocores_miditsv.py \
+python scripts/pipeline/build_pianocores_miditsv.py \
   --metadata data/performance_S_metadata.csv \
   --output-dir data/miditsv \
   --pianocore-root PianoCoRe \
@@ -99,7 +99,7 @@ python scripts/build_pianocores_miditsv.py \
   --overwrite-tsv
 
 # A* performance metadata -> data/miditsv and updated TSV paths
-python scripts/process_astar_performances.py \
+python scripts/data_processing/process_astar_performances.py \
   --metadata data/performance_Astar_metadata.csv \
   --output-dir data/miditsv \
   --output-metadata data/performance_Astar_metadata_updated.csv \
@@ -107,7 +107,7 @@ python scripts/process_astar_performances.py \
   --overwrite-tsv
 
 # Score-only / paired score metadata -> annotated score MIDI-TSV
-python scripts/build_annotated_score_tsv.py \
+python scripts/pipeline/build_annotated_score_tsv.py \
   --metadata data/score_metadata.csv \
   --pianocore-root PianoCoRe \
   --jobs 16 \
@@ -116,11 +116,11 @@ python scripts/build_annotated_score_tsv.py \
 
 Core implementation files:
 
-- `scripts/align_score_performance.py`: current metadata-driven alignment engine.
-- `scripts/aligned_abcx_format.py`: normalized aligned ABCX formatting.
-- `scripts/lm_midi_tsv.py`: strict LM-MIDI TSV representation and validation.
-- `scripts/lm_midi_tokens.py`: compact LM-MIDI token serialization.
-- `scripts/build_annotated_score_tsv.py`: score annotation extraction and score MIDI annotation merge.
+- `scripts/pipeline/align_score_performance.py`: current metadata-driven alignment engine.
+- `scripts/utils/aligned_abcx_format.py`: normalized aligned ABCX formatting.
+- `scripts/utils/lm_midi_tsv.py`: strict LM-MIDI TSV representation and validation.
+- `scripts/utils/lm_midi_tokens.py`: compact LM-MIDI token serialization.
+- `scripts/pipeline/build_annotated_score_tsv.py`: score annotation extraction and score MIDI annotation merge.
 
 The metadata-driven rule comes from `docs/SCORE_PERFORMANCE_ALIGNMENT_PIPELINE.md`: do not discover score/performance pairs by directory scan when metadata provides the score MIDI, performance MIDI, and alignment paths. The old document still shows `PianoCoRe/aligned` examples; current output is `data/miditsv`.
 
@@ -173,18 +173,18 @@ Current corpus builders:
 
 ```bash
 # Build measure-bounded language CPT sources from current metadata.
-python scripts/build_language_cpt_measure_jsons.py \
+python scripts/data_processing/build_language_cpt_measure_jsons.py \
   --tokenizer Qwen3.5-0.8B-LM-MIDI-Resized \
   --max-tokens 1536 \
   --workers 16
 
 # Build shuffled staged CPT rounds.
-python scripts/build_language_cpt_rounds.py \
+python scripts/data_processing/build_language_cpt_rounds.py \
   --input-dir data/CorporaV2/language_cpt \
   --output-dir data/CorporaV2/language_cpt_rounds
 
 # Build active EPR SFT data from score MIDI and performance MIDI.
-python scripts/build_span_epr_corpora.py \
+python scripts/data_processing/build_span_epr_corpora.py \
   --metadata data/performance_S_metadata.csv \
   --corpora-root data/CorporaV2 \
   --tokenizer Qwen3.5-0.8B-LM-MIDI-Resized \
@@ -212,22 +212,22 @@ Each model should have:
 Prepare model/tokenizer variants:
 
 ```bash
-scripts/prepare_qwen35_lm_midi_variants.sh \
+scripts/model_preparation/prepare_qwen35_lm_midi_variants.sh \
   Qwen3.5-0.8B Qwen3.5-2B Qwen3.5-4B
 ```
 
 Relevant tokenizer/model scripts:
 
-- `scripts/extend_lm_midi_tokenizer.py`: add LM-MIDI vocabulary.
-- `scripts/resize_qwen35_lm_midi_embeddings.py`: resize embeddings for expanded tokenizer.
-- `scripts/prepare_qwen35_lm_midi_model.py`: single-model preparation helper.
-- `scripts/prepare_qwen35_lm_midi_variants.sh`: batch preparation for Qwen3.5 variants.
+- `scripts/model_preparation/extend_lm_midi_tokenizer.py`: add LM-MIDI vocabulary.
+- `scripts/model_preparation/resize_qwen35_lm_midi_embeddings.py`: resize embeddings for expanded tokenizer.
+- `scripts/model_preparation/prepare_qwen35_lm_midi_model.py`: single-model preparation helper.
+- `scripts/model_preparation/prepare_qwen35_lm_midi_variants.sh`: batch preparation for Qwen3.5 variants.
 
 Current training entry points:
 
 ```bash
 # Full-parameter CPT
-python scripts/train_cpt_hf_full.py \
+python scripts/training/train_cpt_hf_full.py \
   --model Qwen3.5-0.8B-LM-MIDI-Resized \
   --dataset data/CorporaV2/language_cpt_rounds/round1_train.jsonl \
   --output-dir output/cpt_qwen35_08b_full_rounds/round1 \
@@ -235,7 +235,7 @@ python scripts/train_cpt_hf_full.py \
   --bf16
 
 # PEFT/LoRA CPT with trainable LM-MIDI tokens
-python scripts/train_cpt_hf_peft.py \
+python scripts/training/train_cpt_hf_peft.py \
   --model Qwen3.5-0.8B-LM-MIDI-Resized \
   --base-tokenizer Qwen3.5-0.8B \
   --expanded-tokenizer Qwen3.5-0.8B-LM-MIDI \
@@ -247,9 +247,9 @@ python scripts/train_cpt_hf_peft.py \
 
 Current launch helpers:
 
-- `scripts/launch_cpt_rounds_full_08b.sh`: staged full-parameter CPT for 0.8B.
-- `scripts/launch_cpt_hf_peft_bg.py`: PEFT background launch helper.
-- `scripts/log_gpu_metrics.sh`: GPU logging helper.
+- `scripts/training/launch_cpt_rounds_full_08b.sh`: staged full-parameter CPT for 0.8B.
+- `scripts/training/launch_cpt_hf_peft_bg.py`: PEFT background launch helper.
+- `scripts/training/log_gpu_metrics.sh`: GPU logging helper.
 
 SFT is based on `data/CorporaV2/epr_sft`, not the old `language_sft`, `abcx2pm_sft`, or `sm2pm_sft` trees.
 
@@ -295,17 +295,14 @@ These scripts may still be useful for migration, analysis, or one-off experiment
 
 | Script | Status |
 | --- | --- |
-| `generate_sft_data.py` | Older measure/phrase EPR generator. Superseded by CorporaV2 span EPR flow. |
-| `prepare_sft_data.py`, `prepare_sampled_sft_data.py`, `sample_sft_data.py` | Old SFT preparation. |
-| `generate_language_learning_data.py` | Old language-learning corpus path. |
-| `backup/scripts_legacy/build_language_sft_s1_s2_parallel.py`, `backup/scripts_legacy/build_language_sft_val.py`, `backup/scripts_legacy/merge_and_shuffle_language_sft.py`, `backup/scripts_legacy/shuffle_and_split_language_sft.py` | Old language SFT flow. |
-| `backup/scripts_legacy/build_cores_*`, `backup/scripts_legacy/create_core_s_*`, `scripts/prepare_core_s1_swift.py` | CoRe-S and conversion helpers. `prepare_core_s1_swift.py` remains in `scripts/` only because current `build_span_epr_corpora.py` imports its conversion helper. |
+| `scripts/utils/prepare_core_s1_swift.py` | CoRe-S conversion helper. Remains in `scripts/utils/` only because current `build_span_epr_corpora.py` imports its conversion helper. |
+| `backup/scripts_legacy/build_cores_*`, `backup/scripts_legacy/create_core_s_*` | CoRe-S and conversion helpers. |
 | `backup/scripts_legacy/shuffle_split_epr_s1_sft.py`, `backup/scripts_legacy/build_epr_s1_subsets.py`, `backup/scripts_legacy/build_epr_sample_datasets.py` | Old S1 sampling/shuffle path. |
-| `backup/scripts_legacy/eval_abcx2pm_test.py`, `backup/scripts_legacy/vllm_abcx2pm_smoke.py`, `export_for_vllm.sh` | Old abcx2pm inference/export experiments. |
+| `backup/scripts_legacy/eval_abcx2pm_test.py`, `backup/scripts_legacy/vllm_abcx2pm_smoke.py` | Old abcx2pm inference/export experiments. |
 | `backup/scripts_legacy/process_orphan_abcx.py`, `backup/scripts_legacy/annotated_tsv_to_aligned_abcx.py` | Recovery/conversion utilities, not the normal data path. |
 | `backup/scripts_legacy/asap_abcx_pipeline.py`, `backup/scripts_legacy/align_from_asap_annotations.py`, `backup/scripts_legacy/generate_asap_annotations.py`, `backup/scripts_legacy/copy_asap_originals.py` | Dataset-specific historical helpers, not current source acquisition. |
-| `backup/scripts_legacy/build_astar_language_cpt.py`, `backup/scripts_legacy/build_astar_language_cpt_fast.py` | Earlier A* language CPT builders. Prefer `build_language_cpt_measure_jsons.py`. |
-| `backup/scripts_legacy/build_corpora_v2.py` | V2 filtering wrapper over older `backup/legacy_Corpora` sources. Use the direct CorporaV2 builders above for current regeneration. |
+| `backup/scripts_legacy/build_astar_language_cpt.py`, `backup/scripts_legacy/build_astar_language_cpt_fast.py` | Earlier A* language CPT builders. Prefer `scripts/data_processing/build_language_cpt_measure_jsons.py`. |
+| `backup/scripts_legacy/build_corpora_v2.py` | V2 filtering wrapper over older `backup/legacy_Corpora` sources. Use the direct CorporaV2 builders in `scripts/data_processing/` for current regeneration. |
 
 ## Notes On Score/Performance TSV Semantics
 
@@ -338,7 +335,13 @@ data/
 Qwen3.5-*/                         # base Qwen3.5 model dirs
 Qwen3.5-*-LM-MIDI/                 # expanded tokenizers
 Qwen3.5-*-LM-MIDI-Resized/         # resized LM-MIDI models
-scripts/                           # pipeline, corpus, tokenizer, training scripts
+docs/                              # documentation and reports
+scripts/
+  training/                        # training scripts and launchers
+  model_preparation/               # tokenizer and model preparation
+  pipeline/                        # data pipeline (alignment, TSV generation)
+  data_processing/                 # corpus building and data conversion
+  utils/                           # library files and utilities
 backup/scripts_legacy/             # archived script entry points from old flows
 output/                            # training runs and experiments
 ```

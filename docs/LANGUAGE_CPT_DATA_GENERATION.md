@@ -62,7 +62,7 @@ data/CorporaV2/language_cpt_rounds/
 
 ### Step 1: 生成 measure-boundary JSON 文件
 
-**脚本**: `scripts/build_language_cpt_measure_jsons.py`
+**脚本**: `scripts/data_processing/build_language_cpt_measure_jsons.py`
 
 **功能**:
 1. **读取 TSV 文件**: 从 miditsv 读取 annotated score 和 performance TSV
@@ -78,7 +78,7 @@ data/CorporaV2/language_cpt_rounds/
 
 **执行**:
 ```bash
-python scripts/build_language_cpt_measure_jsons.py \
+python scripts/data_processing/build_language_cpt_measure_jsons.py \
   --tokenizer ./Qwen3.5-0.8B-LM-MIDI-Resized \
   --max-tokens 2048 \
   --workers 32 \
@@ -112,7 +112,7 @@ python scripts/build_language_cpt_measure_jsons.py \
 
 ### Step 2: 构建多轮训练数据
 
-**脚本**: `scripts/build_language_cpt_rounds.py`
+**脚本**: `scripts/data_processing/build_language_cpt_rounds.py`
 
 **功能**:
 1. **读取 JSON 文件**: 从 Step 1 的输出读取数据
@@ -124,7 +124,7 @@ python scripts/build_language_cpt_measure_jsons.py \
 
 **执行**:
 ```bash
-python scripts/build_language_cpt_rounds.py \
+python scripts/data_processing/build_language_cpt_rounds.py \
   --corpora-dir data/CorporaV2/language_cpt \
   --output-dir data/CorporaV2/language_cpt_rounds \
   --seed 42
@@ -160,21 +160,21 @@ ROUND_PLANS = [
 ### 使用脚本
 
 ```bash
-bash scripts/generate_language_cpt.sh
+bash scripts/data_processing/generate_language_cpt.sh
 ```
 
 ### 手动执行
 
 ```bash
 # Step 1: 生成 measure-boundary JSON
-python scripts/build_language_cpt_measure_jsons.py \
+python scripts/data_processing/build_language_cpt_measure_jsons.py \
   --tokenizer ./Qwen3.5-0.8B-LM-MIDI-Resized \
   --max-tokens 2048 \
   --workers 32 \
   --output-dir data/CorporaV2/language_cpt
 
 # Step 2: 构建多轮数据
-python scripts/build_language_cpt_rounds.py \
+python scripts/data_processing/build_language_cpt_rounds.py \
   --corpora-dir data/CorporaV2/language_cpt \
   --output-dir data/CorporaV2/language_cpt_rounds \
   --seed 42
@@ -294,7 +294,7 @@ A: 基于数据量和训练策略：
 
 ### Q: 如何修改分批策略？
 
-A: 编辑 `scripts/build_language_cpt_rounds.py` 中的 `ROUND_PLANS`：
+A: 编辑 `scripts/data_processing/build_language_cpt_rounds.py` 中的 `ROUND_PLANS`：
 
 ```python
 ROUND_PLANS = [
@@ -344,7 +344,7 @@ wc -l data/CorporaV2/language_cpt_rounds/*.jsonl
 
 ## 相关文档
 
-- **训练文档**: `docs/CPT_LANGUAGE_TRAINING.md`
+- **训练文档**: `backup/docs/CPT_LANGUAGE_TRAINING.md` (历史参考)
 - **Loss 分析**: `docs/LOSS_ANALYSIS.md`
 
 ---

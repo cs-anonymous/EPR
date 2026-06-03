@@ -1,0 +1,118 @@
+文件名,功能,启动命令,最后更新时间
+README.md,EPR项目主文档：符号钢琴演奏渲染的完整工作流索引和数据管道说明,,2026-05-28 16:52
+cpt_language.sh,语言CPT训练启动脚本,bash cpt_language.sh,2026-05-28 16:24
+sft_language.sh,语言SFT训练启动脚本,bash sft_language.sh,2026-05-19 22:28
+export_for_vllm.sh,导出模型供vLLM推理使用,bash export_for_vllm.sh,2026-05-28 16:50
+,,,,
+docs/,,,,
+docs/CONFIG_4B_CPT_LORA.md,Qwen3.5-4B-LM-MIDI-Resized CPT LoRA训练配置文档（3卡并行训练设置）,,2026-06-02 19:56
+docs/ANNOTATED_SCORE_GENERATION_REPORT.md,乐谱注释生成报告：MIDI-TSV生成覆盖率和乐谱元数据说明,,2026-05-28 16:15
+docs/AI机器_GPU训练性能分析.md,GPU训练性能分析报告,,2026-06-02 19:52
+docs/ASAP_ANNOTATION_GENERATION.md,ASAP注释生成说明,,,
+docs/EPR_CONDITIONING_PIPELINE.md,EPR条件化管道设计,,,
+docs/EPR_Paper_Outline.md,EPR论文结构,,,
+docs/LANGUAGE_CPT_DATA_GENERATION.md,语言CPT数据生成流程,,,
+docs/lm_midi_tokenizer.md,LM-MIDI固定宽度事件/token语义（活跃格式参考）,,2026-05-30 15:58
+docs/LOSS_ANALYSIS.md,训练loss分析,,,
+docs/OUTDATED_DOCS_REVIEW.md,过时文档审查报告（列出需要更新的文档）,,2026-06-02 20:XX
+docs/phrase_segmentation_design.md,乐句分段设计,,,
+docs/PianoCoRe_paper.md,PianoCoRe数据集论文,,,
+docs/REBOOT_INVESTIGATION.md,系统重启问题调查,,,
+docs/Score-MIDI-to-ABCX-LLM-转换.md,Score-MIDI到ABCX的LLM转换方案,,,
+docs/score_performance_alignment_pipeline.md,元数据驱动的乐谱-演奏对齐管道原理,,2026-05-30 15:58
+docs/score_performance_alignment_tikz.pdf,乐谱-演奏对齐TikZ图,,,
+docs/SFT数据生成方案.md,SFT数据生成方案,,,
+docs/SPIRE SFT 设计.md,EPR/SFT任务框架和符号记谱法设计,,2026-05-22 12:27
+docs/数据集评估报告_SPIRE_SFT.md,SPIRE SFT数据集评估报告,,,
+,,,,
+backup/docs/,,,,
+backup/docs/CPT_LANGUAGE_TRAINING.md,【历史参考】2026-05-19的语言CPT训练配置和FlashAttention笔记,,2026-05-19
+backup/docs/WORK_SUMMARY_20260529.md,【历史参考】2026-05-29工作总结：pipeline重构和数据生成,,,
+backup/docs/pipeline_execution_summary.md,【历史参考】完整数据生成流程执行记录,,,
+,,,,
+scripts/training/,,,,
+scripts/training/train_cpt_hf_peft.py,使用PEFT LoRA进行语言CPT训练（支持可训练token embeddings）,python scripts/training/train_cpt_hf_peft.py --model <model_path> --dataset <data_path> --output-dir <output_path>,2026-06-02 20:24
+scripts/training/train_cpt_hf_full.py,全参数语言CPT训练,python scripts/training/train_cpt_hf_full.py --model <model_path> --dataset <data_path> --output-dir <output_path>,2026-06-01 01:41
+scripts/training/train_cpt_hf_full_continuous_rounds.py,连续多轮全参数CPT训练（不重载模型）,python scripts/training/train_cpt_hf_full_continuous_rounds.py --base-model <model_path> --rounds-dir <rounds_dir> --output-dir <output_path>,2026-06-01 02:28
+scripts/training/train_sft_hf_full_continuous_rounds.py,6轮连续全参数EPR SFT训练,python scripts/training/train_sft_hf_full_continuous_rounds.py --base-model <model_path> --output-dir <output_path>,2026-06-02 20:41
+scripts/training/launch_cpt_4b_lora_rounds.sh,Qwen3.5-4B LoRA CPT 5轮连续训练（3卡并行）,bash scripts/training/launch_cpt_4b_lora_rounds.sh,2026-06-02 19:54
+scripts/training/launch_cpt_rounds_full_08b.sh,Qwen3.5-0.8B全参数CPT分轮训练,bash scripts/training/launch_cpt_rounds_full_08b.sh,2026-06-01 02:29
+scripts/training/launch_cpt_rounds_full_08b_continuous.sh,Qwen3.5-0.8B连续全参数CPT训练,bash scripts/training/launch_cpt_rounds_full_08b_continuous.sh,2026-06-01 02:28
+scripts/training/launch_cpt_hf_peft_bg.py,PEFT LoRA后台训练启动器,python scripts/training/launch_cpt_hf_peft_bg.py,2026-05-21 16:15
+scripts/training/log_gpu_metrics.sh,记录GPU使用指标,bash scripts/training/log_gpu_metrics.sh,2026-05-28 01:30
+,,,,
+scripts/model_preparation/,,,,
+scripts/model_preparation/extend_lm_midi_tokenizer.py,扩展词表添加LM-MIDI token,python scripts/model_preparation/extend_lm_midi_tokenizer.py --base-tokenizer <path> --output-tokenizer <path>,
+scripts/model_preparation/resize_qwen35_lm_midi_embeddings.py,resize embeddings以匹配扩展词表,python scripts/model_preparation/resize_qwen35_lm_midi_embeddings.py --base-model <path> --output-model <path>,
+scripts/model_preparation/prepare_qwen35_lm_midi_model.py,单模型LM-MIDI准备工具,python scripts/model_preparation/prepare_qwen35_lm_midi_model.py --base-model <path>,
+scripts/model_preparation/prepare_qwen35_lm_midi_variants.sh,批量准备Qwen3.5 LM-MIDI模型变体,bash scripts/model_preparation/prepare_qwen35_lm_midi_variants.sh <model_names>,2026-05-27 19:26
+,,,,
+scripts/pipeline/,,,,
+scripts/pipeline/01_build_score_abcx.py,管道步骤1：从PianoCoRe源构建规范乐谱ABCX,python scripts/pipeline/01_build_score_abcx.py,2026-05-29 01:19
+scripts/pipeline/02_build_hm_structure.py,管道步骤2：构建和声-旋律结构,python scripts/pipeline/02_build_hm_structure.py,
+scripts/pipeline/03_write_annotated_tsv.py,管道步骤3：写入带注释的TSV文件,python scripts/pipeline/03_write_annotated_tsv.py,
+scripts/pipeline/04_project_performance_tsv.py,管道步骤4：投影演奏TSV文件,python scripts/pipeline/04_project_performance_tsv.py,
+scripts/pipeline/align_score_performance.py,核心：元数据驱动的乐谱-演奏对齐引擎,python scripts/pipeline/align_score_performance.py --metadata <metadata_csv>,2026-05-31 01:17
+scripts/pipeline/build_annotated_score_tsv.py,核心：乐谱注释提取和注释MIDI合并,python scripts/pipeline/build_annotated_score_tsv.py --metadata <metadata_csv>,2026-05-30 15:58
+scripts/pipeline/run_pipeline.py,运行完整数据处理管道,python scripts/pipeline/run_pipeline.py,
+,,,,
+scripts/data_processing/,,,,
+scripts/data_processing/build_language_cpt_measure_jsons.py,从元数据构建基于measure边界的语言CPT源文件,python scripts/data_processing/build_language_cpt_measure_jsons.py --tokenizer <tokenizer_path>,2026-05-30 01:44
+scripts/data_processing/build_language_cpt_rounds.py,构建打乱后的分轮CPT训练数据,python scripts/data_processing/build_language_cpt_rounds.py --input-dir <input_dir> --output-dir <output_dir>,2026-06-01 02:36
+scripts/data_processing/generate_language_cpt.sh,生成语言CPT训练数据,bash scripts/data_processing/generate_language_cpt.sh,2026-06-01 02:28
+scripts/data_processing/build_span_epr_corpora.py,从乐谱MIDI和演奏MIDI构建EPR SFT数据,python scripts/data_processing/build_span_epr_corpora.py --metadata <metadata_csv> --corpora-root <output_dir>,2026-05-28 16:23
+scripts/data_processing/build_epr_sft_corpora.py,构建EPR SFT语料库,python scripts/data_processing/build_epr_sft_corpora.py,2026-05-31 14:08
+scripts/data_processing/process_astar_performances.py,处理A*演奏元数据并生成MIDI-TSV,python scripts/data_processing/process_astar_performances.py --metadata <metadata_csv> --output-dir <output_dir>,2026-05-28 16:15
+scripts/data_processing/download_pianocore_refined.py,下载PianoCoRe refined资源,python scripts/data_processing/download_pianocore_refined.py,
+scripts/data_processing/generate_unpaired_metadata.py,生成未配对乐谱的元数据,python scripts/data_processing/generate_unpaired_metadata.py,
+scripts/data_processing/convert_imslp_to_abcx.py,IMSLP乐谱转ABCX格式,python scripts/data_processing/convert_imslp_to_abcx.py,
+scripts/data_processing/reconvert_imslp_with_metadata.py,带元数据的IMSLP乐谱重新转换,python scripts/data_processing/reconvert_imslp_with_metadata.py,
+scripts/data_processing/batch_abcx_to_midi.py,批量ABCX转MIDI,python scripts/data_processing/batch_abcx_to_midi.py,
+scripts/data_processing/batch_extract_epr_tags.py,批量提取EPR标签,python scripts/data_processing/batch_extract_epr_tags.py,
+scripts/data_processing/shuffle_and_split_Astar.py,打乱和分割A*数据集,python scripts/data_processing/shuffle_and_split_Astar.py,
+scripts/data_processing/shuffle_and_split_S.py,打乱和分割S数据集,python scripts/data_processing/shuffle_and_split_S.py,
+scripts/data_processing/step23_unpaired.py,未配对数据处理步骤2和3,python scripts/data_processing/step23_unpaired.py,
+,,,,
+scripts/utils/,,,,
+scripts/utils/lm_midi_tsv.py,库文件：LM-MIDI TSV格式表示和验证,,
+scripts/utils/lm_midi_tokens.py,库文件：LM-MIDI token序列化,,
+scripts/utils/abcx_parser.py,库文件：ABCX格式解析器,,
+scripts/utils/aligned_abcx_format.py,库文件：规范化对齐ABCX格式化,,
+scripts/utils/add_perf_gist.py,添加演奏要点,python scripts/utils/add_perf_gist.py,
+scripts/utils/add_performance_gist.py,添加演奏要点（备用版本）,python scripts/utils/add_performance_gist.py,
+scripts/utils/extract_epr_conditioning.py,提取EPR条件化信息,python scripts/utils/extract_epr_conditioning.py,
+scripts/utils/audit_score_tsv_alignment.py,审计乐谱TSV对齐质量,python scripts/utils/audit_score_tsv_alignment.py,
+scripts/utils/build_score_midi_tsv.py,构建乐谱MIDI TSV,python scripts/utils/build_score_midi_tsv.py,
+scripts/utils/cleanup_old_scripts.py,清理旧脚本,python scripts/utils/cleanup_old_scripts.py,
+scripts/utils/prepare_core_s1_swift.py,准备CoRe S1数据（Swift版本）,python scripts/utils/prepare_core_s1_swift.py,
+scripts/utils/fix_metadata_paths_correct.py,修正元数据路径（正确版本）,python scripts/utils/fix_metadata_paths_correct.py,
+scripts/utils/fix_score_metadata_paths.py,修正乐谱元数据路径,python scripts/utils/fix_score_metadata_paths.py,
+scripts/utils/update_score_metadata_paths.py,更新乐谱元数据路径,python scripts/utils/update_score_metadata_paths.py,
+scripts/utils/rebuild_annotated_score_variants.py,重建注释乐谱变体,python scripts/utils/rebuild_annotated_score_variants.py,
+,,,,
+data/,,,,
+data/performance_S_metadata.csv,元数据：PianoCoRe S集成对演奏-乐谱配对元数据,,2026-05-31 01:38
+data/performance_Astar_metadata.csv,元数据：PianoCoRe A*集演奏-乐谱配对元数据,,2026-05-29 02:01
+data/score_metadata.csv,元数据：乐谱元数据（包括未配对乐谱和注释乐谱）,,2026-05-30 01:02
+data/composers.csv,元数据：作曲家信息,,2026-05-18 14:38
+data/piece_interpretation.csv,元数据：作品级音乐诠释文本,,2026-05-31 10:44
+data/miditsv/,MIDI-TSV工作目录：规范化的符号资产（乐谱ABCX、MIDI-TSV）,,,
+data/CorporaV2/,CorporaV2训练语料库：language_cpt、language_cpt_rounds、epr_sft,,,
+data/unpaired_abcx/,未配对乐谱ABCX文件,,,
+,,,,
+output/,,,,
+output/README.md,训练输出说明文档,,2026-05-29 12:01
+output/loss_curve_rounds_1-5_stats.json,统计数据：第1-5轮训练的loss曲线统计,,2026-05-29 17:44
+,,,,
+PianoCoRe/,PianoCoRe数据集源文件（成对的乐谱-演奏数据）,,,
+backup/,备份目录：历史遗留代码、旧版语料库、训练日志,,,
+wave-roll/,Wave-roll子项目：MIDI-TSV转换和可视化工具,,,
+abcx/,ABCX子项目：ABC/ABCX乐谱格式规范和VSCode扩展,,,
+xml2abc/,MusicXML转ABC格式的转换工具,,,
+third_party/,第三方依赖目录,,,
+Qwen3.5-0.8B/,Qwen3.5-0.8B基础模型,,,
+Qwen3.5-0.8B-LM-MIDI/,Qwen3.5-0.8B扩展LM-MIDI词表版本,,,
+Qwen3.5-0.8B-LM-MIDI-Resized/,Qwen3.5-0.8B LM-MIDI词表resize后的模型（用于训练）,,,
+Qwen3.5-4B/,Qwen3.5-4B基础模型,,,
+Qwen3.5-4B-LM-MIDI/,Qwen3.5-4B扩展LM-MIDI词表版本,,,
+Qwen3.5-4B-LM-MIDI-Resized/,Qwen3.5-4B LM-MIDI词表resize后的模型（用于训练）,,,

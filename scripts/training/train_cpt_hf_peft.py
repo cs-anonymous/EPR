@@ -5,13 +5,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from pathlib import Path
 from typing import List
 
 import torch
 from datasets import load_dataset
 from peft import LoraConfig, TaskType, get_peft_model
-from transformers import AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments
+from transformers import AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments, TrainerCallback
 
 
 def load_new_token_ids(base_tokenizer: Path, expanded_tokenizer: Path) -> List[int]:
@@ -51,6 +52,7 @@ def build_model(args, trainable_token_ids: List[int]):
         str(args.model),
         trust_remote_code=True,
         torch_dtype=torch.bfloat16 if args.bf16 else torch.float16,
+        attn_implementation="flash_attention_2",  # 启用FlashAttention 2
     )
     model.config.use_cache = False
 
@@ -92,6 +94,65 @@ def to_jsonable(value):
     return value
 
 
+class DetailedLoggingCallback(TrainerCallback):
+    """Enhanced logging callback with detailed metrics similar to 0.8B training."""
+
+    def __init__(self, total_steps: int, round_name: str = "train_S1"):
+        self.total_steps = total_steps
+        self.round_name = round_name
+        self.start_time = None
+        self.last_log_time = None
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        self.start_time = time.time()
+        self.last_log_time = self.start_time
+
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        # Only log from main process (rank 0)
+        if logs is None or state.global_step == 0:
+            return
+
+        if not state.is_world_process_zero:
+            return
+
+        current_time = time.time()
+        elapsed_seconds = current_time - self.start_time
+
+        # Calculate timing metrics
+        seconds_per_step = elapsed_seconds / state.global_step if state.global_step > 0 else 0
+        remaining_steps = self.total_steps - state.global_step
+        eta_seconds = remaining_steps * seconds_per_step
+
+        # Format ETA
+        eta_hours = int(eta_seconds // 3600)
+        eta_mins = int((eta_seconds % 3600) // 60)
+        eta_secs = int(eta_seconds % 60)
+        eta_str = f"{eta_hours:02d}:{eta_mins:02d}:{eta_secs:02d}"
+
+        # Build detailed log
+        detailed_log = {
+            "round": self.round_name,
+            "epoch": round(state.epoch, 4) if state.epoch else 0,
+            "global_step": state.global_step,
+            "total_steps": self.total_steps,
+            "loss": round(logs.get("loss", 0.0), 6),
+            "learning_rate": logs.get("learning_rate", 0.0),
+            "elapsed_seconds": round(elapsed_seconds, 2),
+            "seconds_per_step": round(seconds_per_step, 3),
+            "eta_seconds": round(eta_seconds, 2),
+            "eta": eta_str,
+        }
+
+        # Add grad_norm if available
+        if "grad_norm" in logs:
+            detailed_log["grad_norm"] = round(logs["grad_norm"], 4)
+
+        # Print detailed JSON log
+        print(json.dumps(detailed_log, ensure_ascii=False), flush=True)
+
+        self.last_log_time = current_time
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", type=Path, required=True)
@@ -105,7 +166,7 @@ def main() -> None:
     parser.add_argument("--gradient-accumulation-steps", type=int, default=4)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--max-length", type=int, default=2048)
-    parser.add_argument("--logging-steps", type=int, default=50)
+    parser.add_argument("--logging-steps", type=int, default=10)
     parser.add_argument("--save-steps", type=int, default=1000)
     parser.add_argument("--save-total-limit", type=int, default=3)
     parser.add_argument("--dataloader-num-workers", type=int, default=4)
@@ -136,6 +197,16 @@ def main() -> None:
 
     raw_dataset = load_dataset("json", data_files=str(args.dataset), split="train")
     collator = CausalLMTextCollator(tokenizer, args.max_length)
+
+    # Calculate total training steps
+    num_devices = torch.cuda.device_count() if torch.cuda.is_available() else 1
+    effective_batch_size = args.per_device_train_batch_size * num_devices * args.gradient_accumulation_steps
+    total_steps = len(raw_dataset) // effective_batch_size
+    if args.max_steps > 0:
+        total_steps = min(total_steps, args.max_steps)
+
+    # Extract round name from output dir
+    round_name = args.output_dir.name if hasattr(args.output_dir, 'name') else str(args.output_dir).split('/')[-1]
 
     manifest = {
         "model": str(args.model),
@@ -177,7 +248,7 @@ def main() -> None:
         dataloader_num_workers=args.dataloader_num_workers,
         dataloader_pin_memory=True,
         remove_unused_columns=False,
-        report_to=["tensorboard"],
+        report_to=[],  # Disable default logging to avoid duplicate short logs
         run_name=str(args.output_dir),
         gradient_checkpointing=args.gradient_checkpointing,
         gradient_checkpointing_kwargs={"use_reentrant": False} if args.gradient_checkpointing else None,
@@ -185,6 +256,8 @@ def main() -> None:
         ddp_find_unused_parameters=False,
         seed=args.seed,
         data_seed=args.seed,
+        disable_tqdm=False,  # Keep progress bar
+        log_level="warning",  # Reduce log verbosity
     )
 
     trainer = Trainer(
@@ -192,10 +265,11 @@ def main() -> None:
         args=training_args,
         train_dataset=raw_dataset,
         data_collator=collator,
+        callbacks=[DetailedLoggingCallback(total_steps=total_steps, round_name=round_name)],
     )
     trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
     trainer.save_model()
-    trainer.save_state()
+    # Don't save optimizer state - only save model
 
 
 if __name__ == "__main__":

@@ -100,8 +100,8 @@ def rotate_checkpoints(output_dir: Path, save_total_limit: int) -> None:
     if save_total_limit <= 0 or not is_main():
         return
     checkpoints = sorted(
-        [path for path in output_dir.iterdir() if path.is_dir() and path.name != "final_model"],
-        key=lambda path: int(path.name),
+        [path for path in output_dir.iterdir() if path.is_dir() and path.name.startswith("checkpoint-")],
+        key=lambda path: int(path.name.split("-")[-1]),
     )
     for old in checkpoints[:-save_total_limit]:
         for child in sorted(old.rglob("*"), reverse=True):

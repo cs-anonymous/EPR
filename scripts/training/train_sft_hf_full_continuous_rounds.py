@@ -160,8 +160,8 @@ def rotate_checkpoints(output_dir: Path, save_total_limit: int) -> None:
     if save_total_limit <= 0 or not is_main():
         return
     checkpoints = sorted(
-        [path for path in output_dir.iterdir() if path.is_dir() and path.name != "final_model"],
-        key=lambda path: int(path.name),
+        [path for path in output_dir.iterdir() if path.is_dir() and path.name.startswith("checkpoint-")],
+        key=lambda path: int(path.name.split("-")[-1]),
     )
     for old in checkpoints[:-save_total_limit]:
         for child in sorted(old.rglob("*"), reverse=True):
@@ -196,6 +196,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-bf16", dest="bf16", action="store_false")
     parser.add_argument("--gradient-checkpointing", action="store_true", default=True)
     parser.add_argument("--no-gradient-checkpointing", dest="gradient_checkpointing", action="store_false")
+    parser.add_argument("--resume-from-global-step", type=int, default=0,
+                        help="Global step to resume from (e.g., 28180). Will skip completed steps.")
     return parser.parse_args()
 
 # ---------- main ----------
@@ -324,13 +326,17 @@ def main() -> None:
         print(f"Trainable parameters: {get_model_param_count(unwrap_model(model), trainable_only=True):,}", flush=True)
     barrier()
 
-    global_step = 0
+    global_step = args.resume_from_global_step
     start_time = time.time()
     cumulative_round_steps = {}
     running_total = 0
     for round_name, _, _, round_steps in round_specs:
         running_total += round_steps
         cumulative_round_steps[round_name] = running_total
+
+    if args.resume_from_global_step > 0 and is_main():
+        print(f"🔄 Resuming from global_step={args.resume_from_global_step}", flush=True)
+
     model.train()
     optimizer.zero_grad(set_to_none=True)
 
@@ -388,6 +394,13 @@ def main() -> None:
                 running_loss += loss.detach().float().item()
 
                 if is_accum_step or is_last_step:
+                    # Check if we should skip this step (already completed in previous run)
+                    potential_next_step = global_step + 1
+                    if potential_next_step <= args.resume_from_global_step:
+                        # Skip this step - already completed
+                        global_step = potential_next_step
+                        continue
+
                     if training_args.max_grad_norm > 0:
                         torch.nn.utils.clip_grad_norm_(model.parameters(), training_args.max_grad_norm)
                     optimizer.step()
